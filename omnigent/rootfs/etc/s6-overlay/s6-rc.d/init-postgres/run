@@ -22,6 +22,13 @@ mkdir -p "${PGDATA}"
 chown -R ${PGUSER_SYSTEM}:${PGUSER_SYSTEM} "${PGDATA}"
 chmod 700 "${PGDATA}"
 
+# Alpine's postgres defaults to /run/postgresql for its unix socket dir.
+# The dir doesn't exist inside a fresh addon container, so postmaster
+# fails to bind. Also postgres user needs a home for .psql_history etc.
+mkdir -p /run/postgresql /var/lib/postgresql
+chown ${PGUSER_SYSTEM}:${PGUSER_SYSTEM} /run/postgresql /var/lib/postgresql
+chmod 775 /run/postgresql
+
 if [ ! -f "${PGDATA}/PG_VERSION" ]; then
     log "initdb — first boot, creating cluster at ${PGDATA}"
     su -s /bin/sh -c "${PGBIN}/initdb -D ${PGDATA} --encoding=UTF8 --locale=C" ${PGUSER_SYSTEM}
@@ -50,11 +57,20 @@ fi
 # background just long enough to run the bootstrap SQL, then stop.
 if ! pgrep -x postgres >/dev/null 2>&1; then
     log "temporarily starting postgres to bootstrap role+db"
-    su -s /bin/sh -c "${PGBIN}/pg_ctl -D ${PGDATA} -l /tmp/pg-bootstrap.log start" ${PGUSER_SYSTEM}
+    su -s /bin/sh -c "${PGBIN}/pg_ctl -D ${PGDATA} -l /tmp/pg-bootstrap.log start" ${PGUSER_SYSTEM} || {
+        log "pg_ctl start failed — dumping /tmp/pg-bootstrap.log:"
+        cat /tmp/pg-bootstrap.log >&2 || true
+        exit 1
+    }
     for _ in $(seq 1 30); do
         su -s /bin/sh -c "${PGBIN}/pg_isready -q -h 127.0.0.1 -p 5432" ${PGUSER_SYSTEM} && break
         sleep 1
     done
+    if ! su -s /bin/sh -c "${PGBIN}/pg_isready -q -h 127.0.0.1 -p 5432" ${PGUSER_SYSTEM}; then
+        log "postgres never became ready — dumping /tmp/pg-bootstrap.log:"
+        cat /tmp/pg-bootstrap.log >&2 || true
+        exit 1
+    fi
 
     if ! su -s /bin/sh -c "psql -tAc \"SELECT 1 FROM pg_roles WHERE rolname='omnigent'\" postgres" ${PGUSER_SYSTEM} | grep -q 1; then
         su -s /bin/sh -c "psql -c \"CREATE ROLE omnigent LOGIN PASSWORD '${POSTGRES_PASSWORD}';\" postgres" ${PGUSER_SYSTEM}

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4 — 2026-09-06
+
+- Pre-create `/run/postgresql` (Alpine's default unix socket dir) so the
+  postmaster can bind on first boot. Fresh addon containers don't ship
+  this dir, causing `pg_ctl start` to silently fail.
+- Dump `/tmp/pg-bootstrap.log` on postgres start failure so future
+  boot errors surface in `ha apps logs` instead of vanishing.
+
 ## 0.1.3 — 2026-09-06
 
 - Drop `bashio::config` in favour of `jq` on `/data/options.json`. On
