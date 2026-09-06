@@ -76,6 +76,8 @@ RUN apk add --no-cache --virtual .build-deps \
         libffi-dev \
         openssl-dev \
         postgresql${POSTGRES_VERSION}-dev \
+        abseil-cpp-dev \
+        re2-dev \
  && pip3 install --no-cache-dir "omnigent==${OMNIGENT_VERSION}" \
  && omnigent --version \
  && which omnigent \

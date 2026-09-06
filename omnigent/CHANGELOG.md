@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.7 — 2026-09-06
+
+- Add `abseil-cpp-dev` + `re2-dev` to the build-deps group so
+  `google-re2`'s source build can find `absl/strings/string_view.h`.
+  Base image also bumped to Python 3.14 which forces a fresh build
+  even where wheels exist for older cpython.
+
 ## 0.1.6 — 2026-09-06
 
 - Actually install `omnigent`. Prior builds shipped an image without
