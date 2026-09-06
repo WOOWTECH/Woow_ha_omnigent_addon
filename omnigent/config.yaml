@@ -53,7 +53,9 @@ schema:
   # Leave empty to use http://homeassistant.local:8000 (LAN default).
   base_url: str?
   # --- Feature flags forwarded via OMNIGENT_FEATURES= ---------------------
-  # Comma-separated. Common: usage_page,web_harness_setup,harness_install
+  # Comma-separated. Defaults to "usage_page,harness_install" (every known
+  # feature in omnigent 0.12.0). Unknown feature keys make the server
+  # refuse to boot, so keep to the documented list.
   features: str?
   # --- Extra env vars (arbitrary passthrough) ------------------------------
   env_vars:
@@ -63,7 +65,7 @@ options:
   admin_username: woow
   admin_password: woowtech2026
   base_url: ""
-  features: ""
+  features: "usage_page,harness_install"
   env_vars: []
 # No `services:` — Postgres is bundled inside the container via s6 (same
 # pattern as Woow_ha_n8n's bundled redis). External runners register over

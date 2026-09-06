@@ -55,7 +55,11 @@ fi
 set_env OMNIGENT_ACCOUNTS_BASE_URL "${BASE_URL}"
 
 # --- Feature flags ---------------------------------------------------------
-FEATURES="$(optget features '')"
+# Default to enabling every feature omnigent 0.12.0 knows about, matching
+# the k3s + podman deployments. Users can override via the add-on
+# `features:` option (comma-separated list). Known keys: usage_page,
+# harness_install. Unknown keys make omnigent-server refuse to boot.
+FEATURES="$(optget features 'usage_page,harness_install')"
 [ -n "${FEATURES}" ] && set_env OMNIGENT_FEATURES "${FEATURES}"
 
 # --- Postgres wiring (all localhost — we bundle the DB in the same pod) ----
