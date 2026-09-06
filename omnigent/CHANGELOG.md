@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.12 — 2026-09-06
+
+- Remove `location = / { return 302 $safe_ingress_path/; }` — it
+  created an ERR_TOO_MANY_REDIRECTS loop for the Ingress iframe.
+  Supervisor strips `/api/hassio_ingress/<slug>` before proxying, so
+  the browser landing on `.../<slug>/` reaches us as `GET /`, and
+  redirecting back to the ingress path just re-hits the same URL.
+
 ## 0.1.11 — 2026-09-06
 
 - Add `py3-psycopg` — omnigent 0.12.0's SQLAlchemy engine imports it
