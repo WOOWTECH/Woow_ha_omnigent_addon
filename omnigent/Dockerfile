@@ -67,6 +67,7 @@ RUN apk add --no-cache \
 # the addon's runtime uid mapping. Clean slate on first run.
 RUN pip3 install --no-cache-dir "omnigent==${OMNIGENT_VERSION}" \
  && omnigent --version \
+ && which omnigent \
  && rm -rf /root/.omnigent /data/omnigent-home/.omnigent 2>/dev/null || true
 
 # --- Rootfs overlay: s6 services + nginx config + init scripts ---------------

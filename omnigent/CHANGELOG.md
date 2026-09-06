@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.5 — 2026-09-06
+
+- Serve ingress path-rewriting shim from a static `_ingress-shim.js`
+  file instead of inlining the JS in `sub_filter`. nginx tried to
+  parse `$/` inside the JS WebSocket regex as a variable reference
+  and refused to load the config (`invalid variable name`).
+- `svc-omnigent-server` now exports an explicit PATH before exec — the
+  s6-oneshot env doesn't inherit it, so `omnigent: not found` was
+  crashing the longrun in a restart loop.
+
 ## 0.1.4 — 2026-09-06
 
 - Pre-create `/run/postgresql` (Alpine's default unix socket dir) so the
