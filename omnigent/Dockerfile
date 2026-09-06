@@ -86,6 +86,50 @@ RUN apk add --no-cache --virtual .build-deps \
  && apk del .build-deps
 RUN rm -rf /root/.omnigent /data/omnigent-home/.omnigent 2>/dev/null || true
 
+# --- HA Ingress auth-guard patches -------------------------------------------
+# omnigent's React SPA has two auth-guard fragments in its minified bundle
+# that break HA Ingress because they assume the SPA is served at the root
+# path. We patch them here (bundle files, on disk) rather than in nginx
+# sub_filter because nginx parses `${...}` in sub_filter arguments as its
+# own variable syntax and refuses to load the config.
+#
+#   Y() in identity.js: `e===\`/login\`` etc. — pathname equality check.
+#     Fails when pathname is `/api/hassio_ingress/<slug>/login` because
+#     that's not literally `/login`. Broaden to endsWith / indexOf so
+#     the ingress-prefixed path still counts as being on /login.
+#
+#   q(e) in identity.js: `location.href=\`${e}?return_to=${t}\``. `e` is
+#     `/login` (bare). Prefix it with window.__INGRESS_PATH__ at
+#     construction time so the redirect stays inside the ingress iframe.
+#
+# The `find ... -exec sed` scans every JS chunk because Rolldown's code-
+# splitting doesn't always keep these fragments in the same file across
+# builds. Byte-for-byte matches on the current omnigent 0.12.0 output.
+# Use `#` as sed delimiter — JS has neither `#` nor other awkward chars
+# in these fragments, and `|` conflicts with the `||` operators in the
+# actual JS code.
+#
+# Three patches total:
+#   1. Y() equality check → broaden to endsWith (so `/api/hassio_ingress/
+#      <slug>/login` still counts as being on the /login page).
+#   2. q(e) redirect target → prefix with window.__INGRESS_PATH__ so the
+#      /login redirect stays inside the ingress iframe instead of hitting
+#      HA's origin /login (which 404s).
+#   3. xwt() router root → default `basename` to window.__INGRESS_PATH__.
+#      React-Router v6 uses this to strip the ingress prefix from
+#      `location.pathname` before matching routes, so the SPA sees
+#      `/login`, `/`, `/settings/*` correctly instead of "Page not found".
+RUN find /usr/lib/python3.12/site-packages/omnigent/server/static/web-ui/assets \
+        -name '*.js' -exec sed -i \
+        -e 's#e===`/login`||e===`/register`||e.startsWith(`/auth/login`)#e===`/login`||e===`/register`||e.startsWith(`/auth/login`)||e.endsWith(`/login`)||e.endsWith(`/register`)||e.indexOf(`/auth/login`)!==-1#g' \
+        -e 's#window.location.href=`${e}?return_to=${t}`#window.location.href=(window.__INGRESS_PATH__||"")+e+"?return_to="+t#g' \
+        -e 's#function xwt({basename:e}={}){let t=e??`#function xwt({basename:e}={}){let t=e??(window.__INGRESS_PATH__||"")||`#g' \
+        {} + \
+ && echo "auth-guard sed patches applied. verify:" \
+ && grep -R -l 'window.__INGRESS_PATH__' \
+        /usr/lib/python3.12/site-packages/omnigent/server/static/web-ui/assets/ \
+        | head -3
+
 # --- Rootfs overlay: s6 services + nginx config + init scripts ---------------
 COPY rootfs/ /
 

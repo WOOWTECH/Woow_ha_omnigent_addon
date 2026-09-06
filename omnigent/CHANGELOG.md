@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.1.13 — 2026-09-06
+
+Deep-dive on HA Ingress support, modelled on the sibling Woow_ha_n8n
+add-on. Result: **Ingress panel is 70% working** (SPA loads, sidebar
+renders, assets fetch through prefix, auth-redirect stays inside the
+ingress iframe) but the main route still renders "Page not found"
+because omnigent's bundled router library uses `rebasePath: e => e`
+(identity) and has no `basename` hookup, so it can't strip
+`/api/hassio_ingress/<slug>` from `location.pathname` before matching
+routes. Upstream needs a `--root-path` CLI flag that:
+
+  1. Sets router `basename` in the client bundle
+  2. Includes ingress prefix in the `login_url` field of `/v1/me` 401 responses
+  3. Passes to Vite build's `base` option so asset URLs get emitted
+     relative to the ingress path
+
+Until then, **use LAN direct `http://<HA-IP>:8000`** (fully working) or
+wire a CF tunnel route mapping a subdomain straight to port 8000 (no
+prefix, no rewriting).
+
+Concrete changes shipped in this release:
+
+- `ingress_entry: login` in config.yaml so HA opens the iframe at the
+  login route directly (same trick n8n uses).
+- Fix cache-control: match `text/javascript` too (omnigent serves JS
+  with that content-type, not `application/javascript`), and
+  `proxy_hide_header Cache-Control` in the location block so our
+  `no-store` actually replaces upstream's `public, max-age=31536000,
+  immutable` instead of stacking. Without this, browsers cached the
+  pre-fix bundle for a year and hid every iteration for hours.
+- Sub_filter extended to `application/javascript` responses (was
+  html-only). `sub_filter_once off` + rewrites for `src="/assets/"`,
+  `href="/assets/"`, `from"/assets/"`, `from "/assets/"`.
+- Dockerfile sed patches into `identity-B-MWCDgo.js`,
+  `index-CFYKOrOo.js`, `routing-B815e3wm.js`:
+    * Y() equality check broadened to `endsWith(\`/login\`)` etc. so
+      the ingress-prefixed pathname counts as being on /login.
+    * q(e) redirect target prefixed with `window.__INGRESS_PATH__`.
+    * xwt() app-router basename defaults to `window.__INGRESS_PATH__`.
+    * Ge() base-router basename defaults to `window.__INGRESS_PATH__`.
+- Static-file shim `ingress-shim.js` extended with `Location.prototype.
+  assign / .replace` monkey-patch (best-effort — Chrome forbids
+  overriding `Location.href` setter because it's `configurable: false`,
+  which is the last missing piece for full Ingress support).
+
 ## 0.1.12 — 2026-09-06
 
 - Remove `location = / { return 302 $safe_ingress_path/; }` — it
