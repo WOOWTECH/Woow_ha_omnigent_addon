@@ -109,21 +109,26 @@ RUN rm -rf /root/.omnigent /data/omnigent-home/.omnigent 2>/dev/null || true
 # in these fragments, and `|` conflicts with the `||` operators in the
 # actual JS code.
 #
-# Three patches total:
-#   1. Y() equality check → broaden to endsWith (so `/api/hassio_ingress/
-#      <slug>/login` still counts as being on the /login page).
-#   2. q(e) redirect target → prefix with window.__INGRESS_PATH__ so the
-#      /login redirect stays inside the ingress iframe instead of hitting
-#      HA's origin /login (which 404s).
-#   3. xwt() router root → default `basename` to window.__INGRESS_PATH__.
-#      React-Router v6 uses this to strip the ingress prefix from
-#      `location.pathname` before matching routes, so the SPA sees
-#      `/login`, `/`, `/settings/*` correctly instead of "Page not found".
+# Three-patch pipeline that PAIRS with the `history.replaceState()` prefix
+# strip performed by ingress-shim.js on first script exec. After the shim
+# runs, `location.pathname` returns `/login` (etc.) — omnigent's router
+# then matches routes correctly WITHOUT needing a basename hookup that
+# the bundled router library doesn't expose. Sed handles the two spots
+# where the bundle would still emit unprefixed URLs to the browser:
+#
+#   1. `q(e)` builds a `location.href = "/login?return_to=<encoded
+#      pathname>"` string. We prefix BOTH the target (`/login` →
+#      ingress-prefixed) AND the return_to encoding (so post-login
+#      navigation lands back inside the ingress).
+#
+#   2. `Y()` equality check: after the shim strips pathname to `/login`,
+#      the original strict `===` check works, but we broaden anyway with
+#      endsWith to be safe against re-strip races on lazy chunks.
 RUN find /usr/lib/python3.12/site-packages/omnigent/server/static/web-ui/assets \
         -name '*.js' -exec sed -i \
         -e 's#e===`/login`||e===`/register`||e.startsWith(`/auth/login`)#e===`/login`||e===`/register`||e.startsWith(`/auth/login`)||e.endsWith(`/login`)||e.endsWith(`/register`)||e.indexOf(`/auth/login`)!==-1#g' \
+        -e 's#let t=encodeURIComponent(window.location.pathname+window.location.search)#let t=encodeURIComponent((window.__INGRESS_PATH__||"")+window.location.pathname+window.location.search)#g' \
         -e 's#window.location.href=`${e}?return_to=${t}`#window.location.href=(window.__INGRESS_PATH__||"")+e+"?return_to="+t#g' \
-        -e 's#function xwt({basename:e}={}){let t=e??`#function xwt({basename:e}={}){let t=e??(window.__INGRESS_PATH__||"")||`#g' \
         {} + \
  && echo "auth-guard sed patches applied. verify:" \
  && grep -R -l 'window.__INGRESS_PATH__' \

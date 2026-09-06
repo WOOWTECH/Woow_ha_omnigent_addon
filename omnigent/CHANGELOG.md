@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.1.14 — 2026-09-06
+
+🎉 **HA Ingress panel now 100% functional.** Full feature parity with
+the k3s reference deployment (`omnigent.woowtech.io`) achieved through
+the HA sidebar `Woow Omnigent` panel — no LAN / CF tunnel needed for
+end users.
+
+The winning combination (five layers, all required):
+
+1. **`history.replaceState()` early in `ingress-shim.js`** — strips
+   `/api/hassio_ingress/<slug>` from the iframe's URL bar the instant
+   the shim runs (before any React/module code). Omnigent's router
+   then reads `location.pathname === "/login"` (not
+   `/api/hassio_ingress/<slug>/login`) and matches routes normally.
+   Bypasses the need for `basename` hookup in the bundled router
+   library, which we couldn't monkey-patch cleanly.
+
+2. **Versioned `/assets-v0-1-13/` alias in nginx** — the *only* way to
+   invalidate the `immutable, max-age=31536000` browser cache that
+   omnigent's server sets on every asset. We rewrite `/assets/` →
+   `/assets-v0-1-13/` in both HTML and JS (chunk imports), then a
+   dedicated `location ~ ^/assets-v0-1-13/…` proxy strips the version
+   before forwarding upstream. Bump the number when bundle patches
+   change and every user's browser refetches automatically.
+
+3. **Three sed patches to the built React bundle** (Dockerfile
+   post-install step, byte-for-byte matches on omnigent 0.12.0's
+   Rolldown output):
+     - `Y()` auth-guard equality → broadened `endsWith` (safety net
+       for lazy chunks that load before the shim's replaceState)
+     - `t = encodeURIComponent(pathname + search)` → prefixed with
+       `window.__INGRESS_PATH__` so post-login `?return_to=…` lands
+       back inside the ingress
+     - `q(e)` redirect target → prefixed with `window.__INGRESS_PATH__`
+       so unauthenticated redirects to `/login` stay inside the frame
+
+4. **`proxy_hide_header Cache-Control` + `text/javascript` MIME match
+   in the cache-control map** — omnigent serves JS as `text/javascript`
+   (older spelling), so `application/javascript` alone missed it, and
+   `add_header` stacked with upstream's `immutable` rather than
+   replacing. Both fixed here.
+
+5. **`sub_filter_types text/html application/javascript` +
+   `Accept-Encoding ""` to upstream** — sub_filter can't rewrite
+   gzip'd bodies, so we ask FastAPI for identity.
+
+**Verified end-to-end via HA UI Ingress panel** (browser through
+Cloudflare → HA → Supervisor → nginx → omnigent): login, sidebar with
+sessions from persistent Postgres, Settings navigation, host picker
+showing `Online 1b7b4ce7-woow-ha-pi-agent` (the sibling `woow_ha_pi_agent`
+addon auto-registered as an external runner).
+
 ## 0.1.13 — 2026-09-06
 
 Deep-dive on HA Ingress support, modelled on the sibling Woow_ha_n8n

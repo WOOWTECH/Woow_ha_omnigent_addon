@@ -1,5 +1,5 @@
 name: Woow Omnigent
-version: 0.1.13
+version: 0.1.14
 slug: woow-omnigent
 image: ghcr.io/woowtech/woow-ha-omnigent-{arch}
 description: >-
@@ -20,11 +20,10 @@ ingress_stream: true
 panel_icon: mdi:brain
 panel_title: Woow Omnigent
 panel_admin: true
-# Same trick n8n uses. Tells HA Supervisor to open the ingress panel at
-# `/api/hassio_ingress/<slug>/login` directly. Combined with the auth-guard
-# sub_filter patches, the SPA lands on its own /login route from the start
-# and doesn't fire a redirect that would escape the ingress path.
-ingress_entry: login
+# NOTE: `ingress_entry: login` was tried but interacts badly with
+# `proxy_redirect` in nginx — HA Supervisor keeps redirecting the root
+# path to the entry, our nginx re-prefixes, and the browser hits
+# ERR_TOO_MANY_REDIRECTS. Leave unset — Supervisor opens at root.
 webui: "http://[HOST]:[PORT:8000]"
 watchdog: "http://[HOST]:[PORT:8080]/health"
 ports:
