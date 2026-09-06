@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.3 — 2026-09-06
+
+- Drop `bashio::config` in favour of `jq` on `/data/options.json`. On
+  this base image the Supervisor API token isn't reliably wired into
+  the s6-oneshot env, so every `bashio::config` call returned "Unable
+  to access the API, forbidden" and the container refused to boot. The
+  on-disk options.json is authoritative anyway.
+- Switch all `run` scripts to `#!/command/with-contenv sh` for uniform
+  env inheritance from `/run/s6/container_environment/`.
+- Fix env dir path: was `/var/run/s6-rc/container_environment` (wrong),
+  now `/run/s6/container_environment` (what s6-overlay v3 actually reads).
+
 ## 0.1.2 — 2026-09-06
 
 - Re-enable `hassio_api: true`. `bashio::config` fetches
