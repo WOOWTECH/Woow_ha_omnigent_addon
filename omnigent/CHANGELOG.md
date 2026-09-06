@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.11 — 2026-09-06
+
+- Add `py3-psycopg` — omnigent 0.12.0's SQLAlchemy engine imports it
+  via `postgresql+psycopg://…` but doesn't declare it as a hard PyPI
+  dep, so the container ended up with sqlalchemy but no driver:
+  `ModuleNotFoundError: No module named 'psycopg'`.
+
 ## 0.1.10 — 2026-09-06
 
 - Minimise `.build-deps` to `build-base + abseil-cpp-dev + re2-dev`.

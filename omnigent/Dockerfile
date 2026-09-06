@@ -57,6 +57,7 @@ RUN apk add --no-cache \
         postgresql${POSTGRES_VERSION}-contrib \
         python3 \
         py3-pip \
+        py3-psycopg \
         tzdata
 
 # --- omnigent (upstream Python package) --------------------------------------
