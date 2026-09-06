@@ -17,9 +17,9 @@
 
 # Base image is per-arch and pinned in the CI matrix via --build-arg.
 # The `base/{arch}` naming matches upstream hassio-addons/addon-base packages
-# (e.g. ghcr.io/hassio-addons/base/amd64:21.0.4). The default here is just a
+# (e.g. ghcr.io/hassio-addons/base/amd64:20.2.0). The default here is just a
 # fallback for local `docker build` on amd64 — CI always overrides it.
-ARG BUILD_FROM=ghcr.io/hassio-addons/base/amd64:21.0.4
+ARG BUILD_FROM=ghcr.io/hassio-addons/base/amd64:20.2.0
 FROM ${BUILD_FROM}
 
 ARG BUILD_ARCH=amd64

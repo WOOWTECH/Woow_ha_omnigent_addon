@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.9 — 2026-09-06
+
+- Pin base image to `hassio-addons/base:20.2.0` (Alpine 3.22 + Python
+  3.12) instead of `21.0.4` (Alpine 3.23 + Python 3.14). Upstream
+  `anyio` fails to import on 3.14:
+  `ImportError: cannot import name 'sentinel' from 'typing_extensions'`
+  — the module renamed it to `Sentinel` in newer versions and anyio's
+  release used with omnigent 0.12.0 wasn't updated yet.
+
 ## 0.1.8 — 2026-09-06
 
 - `svc-omnigent-server` now sources `/var/run/omnigent.env` and passes

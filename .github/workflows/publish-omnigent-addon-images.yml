@@ -31,10 +31,10 @@ jobs:
         include:
           - arch: amd64
             platform: linux/amd64
-            base: ghcr.io/hassio-addons/base/amd64:21.0.4
+            base: ghcr.io/hassio-addons/base/amd64:20.2.0
           - arch: aarch64
             platform: linux/arm64
-            base: ghcr.io/hassio-addons/base/aarch64:21.0.4
+            base: ghcr.io/hassio-addons/base/aarch64:20.2.0
     steps:
       - uses: actions/checkout@v4
 
