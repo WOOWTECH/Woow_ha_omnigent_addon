@@ -10,7 +10,8 @@ description: >-
 url: https://github.com/WOOWTECH/Woow_ha_omnigent_addon
 arch: [amd64, aarch64]
 init: false
-hassio_api: true
+# No supervisor/HA API needed — omnigent is self-contained.
+hassio_api: false
 homeassistant_api: false
 ingress: true
 ingress_port: 8080
@@ -59,7 +60,6 @@ options:
   base_url: ""
   features: ""
   env_vars: []
-services:
-  # No hard dependency on other add-ons. Postgres is bundled inside the
-  # container via s6 (same pattern as Woow_ha_n8n's bundled redis).
-  # External runners register themselves — no MariaDB service needed.
+# No `services:` — Postgres is bundled inside the container via s6 (same
+# pattern as Woow_ha_n8n's bundled redis). External runners register over
+# HTTP, so no MariaDB or other Supervisor service dependency is needed.
