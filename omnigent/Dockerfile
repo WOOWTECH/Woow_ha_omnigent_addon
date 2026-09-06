@@ -65,10 +65,22 @@ RUN apk add --no-cache \
 # rm -rf ~/.omnigent because `omnigent --version` at build time
 # initialises $HOME/.omnigent/logs as root uid 0, which will collide with
 # the addon's runtime uid mapping. Clean slate on first run.
-RUN pip3 install --no-cache-dir "omnigent==${OMNIGENT_VERSION}" \
+# google-re2 is a transitive dep of cel-python (via omnigent) and ships
+# no musllinux wheel — it must build from source, which needs g++ + make.
+# We install a throwaway .build-deps group so the runtime image stays lean.
+# Do NOT trail with `|| true` — a silent pip failure is what shipped 0.1.5
+# without the omnigent binary and burnt half an afternoon of debugging.
+RUN apk add --no-cache --virtual .build-deps \
+        build-base \
+        python3-dev \
+        libffi-dev \
+        openssl-dev \
+        postgresql${POSTGRES_VERSION}-dev \
+ && pip3 install --no-cache-dir "omnigent==${OMNIGENT_VERSION}" \
  && omnigent --version \
  && which omnigent \
- && rm -rf /root/.omnigent /data/omnigent-home/.omnigent 2>/dev/null || true
+ && apk del .build-deps
+RUN rm -rf /root/.omnigent /data/omnigent-home/.omnigent 2>/dev/null || true
 
 # --- Rootfs overlay: s6 services + nginx config + init scripts ---------------
 COPY rootfs/ /

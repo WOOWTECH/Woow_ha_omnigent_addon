@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.6 — 2026-09-06
+
+- Actually install `omnigent`. Prior builds shipped an image without
+  the Python package because `google-re2` (transitive dep via
+  `cel-python`) has no musllinux wheel and needs `c++` to build from
+  source — and the Dockerfile swallowed the failure with `|| true`,
+  producing an "successful" image with no server binary.
+- Add throwaway `.build-deps` (build-base + python3-dev + libffi-dev +
+  openssl-dev + postgres-dev) around the pip install, then `apk del`.
+- Split the `rm ~/.omnigent` cleanup into its own RUN so a real
+  install failure now aborts the build instead of vanishing.
+
 ## 0.1.5 — 2026-09-06
 
 - Serve ingress path-rewriting shim from a static `_ingress-shim.js`
