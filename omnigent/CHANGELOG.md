@@ -7,6 +7,26 @@
   Supervisor strips `/api/hassio_ingress/<slug>` before proxying, so
   the browser landing on `.../<slug>/` reaches us as `GET /`, and
   redirecting back to the ingress path just re-hits the same URL.
+- Include `/etc/nginx/mime.types` so CSS is served as `text/css`
+  (browsers with strict MIME checking refuse `text/plain` stylesheets).
+- Set `proxy_set_header Accept-Encoding "";` — sub_filter can't rewrite
+  gzip'd upstream responses, so we ask FastAPI/uvicorn for identity.
+- `sub_filter_once off` + rewrite `src="/assets/` and `href="/assets/`
+  to `$safe_ingress_path/assets/`. Vite emits root-absolute bundle
+  URLs and `<base>` doesn't help absolute paths, so we patch them
+  in-flight before the browser fetches.
+- Add `proxy_redirect ~^/(.*) $safe_ingress_path/$1;` so any
+  server-side 302 Location gets ingress-prefixed too.
+- **Known limitation:** the HA Ingress panel is still partially broken
+  because omnigent's React SPA uses `window.location.href = "/login"`
+  for client-side redirects. Chrome's `Location.href` setter has
+  `configurable: false` and can't be monkey-patched from user JS, so
+  our shim (which does hook `.assign()` / `.replace()` / fetch / XHR /
+  WebSocket / pushState) can't intercept it. Workaround: use LAN
+  direct `http://<HA-IP>:8000` or wire a CF tunnel route that maps
+  a subdomain straight to port 8000 (no path prefix).
+
+
 
 ## 0.1.11 — 2026-09-06
 
