@@ -15,7 +15,11 @@
 #
 # Sizing target: <400 MB compressed.
 
-ARG BUILD_FROM=ghcr.io/hassio-addons/base:17.0.4
+# Base image is per-arch and pinned in the CI matrix via --build-arg.
+# The `base/{arch}` naming matches upstream hassio-addons/addon-base packages
+# (e.g. ghcr.io/hassio-addons/base/amd64:21.0.4). The default here is just a
+# fallback for local `docker build` on amd64 — CI always overrides it.
+ARG BUILD_FROM=ghcr.io/hassio-addons/base/amd64:21.0.4
 FROM ${BUILD_FROM}
 
 ARG BUILD_ARCH=amd64
@@ -23,6 +27,9 @@ ARG BUILD_VERSION
 ARG BUILD_DATE
 
 ARG OMNIGENT_VERSION=0.12.0
+# Alpine 3.24 ships both postgresql16 and postgresql17. We pin to 16 to
+# match the k3s + podman deployments' StatefulSet postgres major version
+# (so backups + WAL streams are interchangeable if we ever move the DB).
 ARG POSTGRES_VERSION=16
 
 ENV LANG=C.UTF-8 \

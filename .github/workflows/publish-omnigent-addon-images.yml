@@ -31,8 +31,10 @@ jobs:
         include:
           - arch: amd64
             platform: linux/amd64
+            base: ghcr.io/hassio-addons/base/amd64:21.0.4
           - arch: aarch64
             platform: linux/arm64
+            base: ghcr.io/hassio-addons/base/aarch64:21.0.4
     steps:
       - uses: actions/checkout@v4
 
@@ -68,6 +70,7 @@ jobs:
             ghcr.io/woowtech/woow-ha-omnigent-${{ matrix.arch }}:${{ steps.v.outputs.version }}
             ghcr.io/woowtech/woow-ha-omnigent-${{ matrix.arch }}:latest
           build-args: |
+            BUILD_FROM=${{ matrix.base }}
             BUILD_ARCH=${{ matrix.arch }}
             BUILD_VERSION=${{ steps.v.outputs.version }}
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
