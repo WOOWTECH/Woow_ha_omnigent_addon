@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.8 — 2026-09-06
+
+- `svc-omnigent-server` now sources `/var/run/omnigent.env` and passes
+  `--host 0.0.0.0 --port 8000 --database-uri postgresql+psycopg://...
+  --no-open` explicitly. `with-contenv` snapshots
+  `/run/s6/container_environment/` at boot before `init-addon-config`
+  writes to it, so omnigent was falling back to defaults and binding
+  `127.0.0.1:6767` on sqlite instead.
+
 ## 0.1.7 — 2026-09-06
 
 - Add `abseil-cpp-dev` + `re2-dev` to the build-deps group so
