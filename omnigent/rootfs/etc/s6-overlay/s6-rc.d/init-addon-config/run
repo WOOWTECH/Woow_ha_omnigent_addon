@@ -1,0 +1,72 @@
+#!/usr/bin/env bashio
+# init-addon-config — read /data/options.json (managed by HA Supervisor)
+# and materialise every value into an env file + /var/run/s6 env dir. All
+# downstream services (postgres, omnigent-server, admin-claim, nginx) source
+# from the same place, matching the Woow_ha_n8n add-on pattern.
+set -e
+
+CONFIG_ENV=/var/run/omnigent.env
+S6_ENV_DIR=/var/run/s6/container_environment
+mkdir -p "${S6_ENV_DIR}"
+: > "${CONFIG_ENV}"
+
+# Convert an addon option to a shell-safe key + value line.
+set_env() {
+    local key="$1" value="$2"
+    printf '%s=%s\n' "${key}" "${value}" >> "${CONFIG_ENV}"
+    printf '%s' "${value}" > "${S6_ENV_DIR}/${key}"
+}
+
+# --- Admin identity (feeds init-admin-claim + omnigent-server bootstrap) ----
+ADMIN_USERNAME="$(bashio::config 'admin_username' 'woow')"
+ADMIN_PASSWORD="$(bashio::config 'admin_password' 'woowtech2026')"
+set_env OMNIGENT_ADMIN_USERNAME "${ADMIN_USERNAME}"
+set_env OMNIGENT_ADMIN_PASSWORD "${ADMIN_PASSWORD}"
+
+# --- Base URL --------------------------------------------------------------
+# Auto-derive from LAN if user didn't set one. Runners use this in their
+# `omnigent host --server <URL>` invocations for tunnel dial-in.
+BASE_URL="$(bashio::config 'base_url' '')"
+if [ -z "${BASE_URL}" ] || [ "${BASE_URL}" = "null" ]; then
+    BASE_URL="http://homeassistant.local:8000"
+fi
+set_env OMNIGENT_ACCOUNTS_BASE_URL "${BASE_URL}"
+
+# --- Feature flags ---------------------------------------------------------
+FEATURES="$(bashio::config 'features' '')"
+[ -n "${FEATURES}" ] && [ "${FEATURES}" != "null" ] && set_env OMNIGENT_FEATURES "${FEATURES}"
+
+# --- Postgres wiring (all localhost — we bundle the DB in the same pod) -----
+POSTGRES_PASSWORD="woowtech"   # internal only; not published on any port
+set_env POSTGRES_PASSWORD "${POSTGRES_PASSWORD}"
+set_env DATABASE_URL "postgresql+psycopg://omnigent:${POSTGRES_PASSWORD}@127.0.0.1:5432/omnigent"
+
+# --- Static server config --------------------------------------------------
+set_env HOST "0.0.0.0"
+set_env PORT "8000"
+set_env OMNIGENT_AUTH_ENABLED "1"
+set_env ARTIFACT_DIR "/data/artifacts"
+set_env OMNIGENT_ADMIN_CREDENTIALS_PATH "/data/admin-credentials"
+set_env HOME "/data/omnigent-home"
+mkdir -p /data/omnigent-home /data/artifacts
+
+# --- Optional extra env vars (arbitrary user passthrough) ------------------
+# `env_vars: [{key, value}]` mirrors the n8n add-on's pattern for letting
+# operators set e.g. OMNIGENT_LOG_LEVEL without needing a schema change.
+if bashio::config.has_value 'env_vars'; then
+    for i in $(bashio::config 'env_vars|keys'); do
+        k="$(bashio::config "env_vars[${i}].key")"
+        v="$(bashio::config "env_vars[${i}].value")"
+        [ -n "${k}" ] && set_env "${k}" "${v}"
+    done
+fi
+
+# --- TZ / localtime --------------------------------------------------------
+TZ="$(bashio::config 'tz' 'Asia/Taipei')"
+if [ -f "/usr/share/zoneinfo/${TZ}" ]; then
+    ln -sf "/usr/share/zoneinfo/${TZ}" /etc/localtime
+    echo "${TZ}" > /etc/timezone
+    set_env TZ "${TZ}"
+fi
+
+bashio::log.info "addon config materialised → ${CONFIG_ENV}"

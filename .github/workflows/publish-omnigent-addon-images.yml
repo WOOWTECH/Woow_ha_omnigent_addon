@@ -1,0 +1,75 @@
+name: Publish omnigent add-on images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "omnigent/**"
+      - ".github/workflows/publish-omnigent-addon-images.yml"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Extra tag to push (e.g. 0.1.0). 'latest' is always added on main."
+        required: false
+        default: ""
+
+# Prevent stacked runs on rapid pushes clobbering each other.
+concurrency:
+  group: publish-omnigent-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: aarch64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute version
+        id: v
+        run: |
+          set -eu
+          # Prefer config.yaml so image tag matches the add-on the Supervisor pulls.
+          VERSION=$(grep -E '^version:' omnigent/config.yaml | awk '{print $2}' | tr -d '"')
+          [ -n "${VERSION}" ] || VERSION=dev
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build + push (${{ matrix.arch }})
+        uses: docker/build-push-action@v5
+        with:
+          context: ./omnigent
+          file: ./omnigent/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: true
+          # Per-arch tag — the manifest job below wires them into a single
+          # multi-arch index that matches the `image:` field in config.yaml.
+          tags: |
+            ghcr.io/woowtech/woow-ha-omnigent-${{ matrix.arch }}:${{ steps.v.outputs.version }}
+            ghcr.io/woowtech/woow-ha-omnigent-${{ matrix.arch }}:latest
+          build-args: |
+            BUILD_ARCH=${{ matrix.arch }}
+            BUILD_VERSION=${{ steps.v.outputs.version }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
+          cache-from: type=gha,scope=omnigent-${{ matrix.arch }}
+          cache-to: type=gha,scope=omnigent-${{ matrix.arch }},mode=max

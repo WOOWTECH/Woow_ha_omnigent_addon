@@ -1,0 +1,42 @@
+#!/usr/bin/env bashio
+# init-admin-claim — after svc-omnigent-server binds, if the server reports
+# `needs_setup: true` on GET /v1/info, POST /auth/setup with the admin creds
+# from options.json. Idempotent — 409 = already claimed, we exit clean.
+# Same shape as the podman sibling's install.sh block + the k3s helm hook.
+set -eu
+
+# shellcheck disable=SC1091
+. /var/run/omnigent.env
+
+bashio::log.info "waiting for omnigent-server /health"
+for i in $(seq 1 60); do
+    if curl -sSf --max-time 3 http://127.0.0.1:8000/health >/dev/null 2>&1; then
+        bashio::log.info "server up after ~${i}s"
+        break
+    fi
+    sleep 2
+    if [ "$i" -eq 60 ]; then
+        bashio::log.warning "server never answered /health — skipping admin claim"
+        exit 0
+    fi
+done
+
+INFO=$(curl -sS --max-time 5 http://127.0.0.1:8000/v1/info || echo '{}')
+NEEDS=$(printf '%s' "${INFO}" | jq -r '.needs_setup // false')
+
+if [ "${NEEDS}" != "true" ]; then
+    bashio::log.info "admin already claimed (needs_setup=${NEEDS}) — skipping"
+    exit 0
+fi
+
+bashio::log.info "auto-claiming admin '${OMNIGENT_ADMIN_USERNAME}' via POST /auth/setup"
+CODE=$(curl -sS -o /tmp/setup-resp -w '%{http_code}' \
+    -X POST -H 'Content-Type: application/json' \
+    --data "{\"username\":\"${OMNIGENT_ADMIN_USERNAME}\",\"password\":\"${OMNIGENT_ADMIN_PASSWORD}\"}" \
+    --max-time 10 http://127.0.0.1:8000/auth/setup)
+
+case "${CODE}" in
+    200|201) bashio::log.info "admin '${OMNIGENT_ADMIN_USERNAME}' created" ;;
+    409)     bashio::log.info "admin already exists (409) — ok" ;;
+    *)       bashio::log.error "POST /auth/setup returned ${CODE}: $(cat /tmp/setup-resp | head -c 200)"; exit 1 ;;
+esac

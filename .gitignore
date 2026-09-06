@@ -1,0 +1,19 @@
+# Build artefacts
+*.pyc
+__pycache__/
+.venv/
+node_modules/
+.DS_Store
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local overrides that shouldn't ship in the add-on
+omnigent/.local/
+omnigent/data/
+
+# HA test runner leftovers (from `ha addons rebuild` on a dev checkout)
+.hass-*

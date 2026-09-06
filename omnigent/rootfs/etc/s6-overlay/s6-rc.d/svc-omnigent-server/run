@@ -1,0 +1,4 @@
+#!/command/with-contenv sh
+# svc-omnigent-server — the upstream Python service. All env comes from
+# init-addon-config's materialised container_environment dir.
+exec omnigent server

@@ -1,0 +1,65 @@
+name: Woow Omnigent
+version: 0.1.0
+slug: woow-omnigent
+image: ghcr.io/woowtech/woow-ha-omnigent-{arch}
+description: >-
+  Omnigent 0.12.0 meta-harness — orchestration server + bundled Postgres.
+  External runners (pi / claude / codex / …) register from wherever via
+  `omnigent host --server http://homeassistant.local:8000`. HTTP for LAN;
+  pair with the Cloudflared add-on for HTTPS.
+url: https://github.com/WOOWTECH/Woow_ha_omnigent_addon
+arch: [amd64, aarch64]
+init: false
+hassio_api: true
+homeassistant_api: false
+ingress: true
+ingress_port: 8080
+ingress_stream: true
+panel_icon: mdi:brain
+panel_title: Woow Omnigent
+panel_admin: true
+webui: "http://[HOST]:[PORT:8000]"
+watchdog: "http://[HOST]:[PORT:8080]/health"
+ports:
+  8000/tcp: 8000
+ports_description:
+  8000/tcp: >-
+    Web UI + runner tunnel endpoint (LAN). Bind to a public-reachable URL
+    via the Cloudflared HA add-on if remote runners need to dial in.
+map:
+  - type: addon_config
+    read_only: false
+  - type: share
+    read_only: false
+  - type: backup
+    read_only: false
+backup: cold
+backup_exclude:
+  - "**/logs/**"
+  - "**/pg_wal/**"
+schema:
+  # --- Admin identity ------------------------------------------------------
+  admin_username: str
+  admin_password: password
+  # --- Public URL runners dial in on ---------------------------------------
+  # Only set this if you have a Cloudflared add-on route pointing at us —
+  # runners registered via that URL use it in webhook links and invite URLs.
+  # Leave empty to use http://homeassistant.local:8000 (LAN default).
+  base_url: url?
+  # --- Feature flags forwarded via OMNIGENT_FEATURES= ---------------------
+  # Comma-separated. Common: usage_page,web_harness_setup,harness_install
+  features: str?
+  # --- Extra env vars (arbitrary passthrough) ------------------------------
+  env_vars:
+    - key: match(^[A-Z][A-Z0-9_]*$)
+      value: str
+options:
+  admin_username: woow
+  admin_password: woowtech2026
+  base_url: ""
+  features: ""
+  env_vars: []
+services:
+  # No hard dependency on other add-ons. Postgres is bundled inside the
+  # container via s6 (same pattern as Woow_ha_n8n's bundled redis).
+  # External runners register themselves — no MariaDB service needed.
