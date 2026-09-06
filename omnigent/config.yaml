@@ -1,5 +1,5 @@
 name: Woow Omnigent
-version: 0.1.0
+version: 0.1.1
 slug: woow-omnigent
 image: ghcr.io/woowtech/woow-ha-omnigent-{arch}
 description: >-
@@ -46,7 +46,7 @@ schema:
   # Only set this if you have a Cloudflared add-on route pointing at us —
   # runners registered via that URL use it in webhook links and invite URLs.
   # Leave empty to use http://homeassistant.local:8000 (LAN default).
-  base_url: url?
+  base_url: str?
   # --- Feature flags forwarded via OMNIGENT_FEATURES= ---------------------
   # Comma-separated. Common: usage_page,web_harness_setup,harness_install
   features: str?

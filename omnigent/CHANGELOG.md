@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 — 2026-09-06
+
+- `base_url` schema relaxed from `url?` to `str?` so an empty string
+  (the default when the operator hasn't set up a CF tunnel yet) doesn't
+  fail Supervisor validation.
+
 ## 0.1.0 — 2026-09-06
 
 - Initial release.
