@@ -70,12 +70,13 @@ RUN apk add --no-cache \
 # We install a throwaway .build-deps group so the runtime image stays lean.
 # Do NOT trail with `|| true` — a silent pip failure is what shipped 0.1.5
 # without the omnigent binary and burnt half an afternoon of debugging.
+# google-re2 wheel build needs g++ (build-base) + abseil headers.
+# The other -dev packages were belt-and-braces but they trigger apk
+# version-pinning conflicts on base 20.2.0 (openssl-dev wants
+# libcrypto3-3.5.8 but world pins 3.5.6). Everything else in
+# omnigent's dep tree ships musllinux wheels.
 RUN apk add --no-cache --virtual .build-deps \
         build-base \
-        python3-dev \
-        libffi-dev \
-        openssl-dev \
-        postgresql${POSTGRES_VERSION}-dev \
         abseil-cpp-dev \
         re2-dev \
  && pip3 install --no-cache-dir "omnigent==${OMNIGENT_VERSION}" \

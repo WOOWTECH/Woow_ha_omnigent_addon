@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.10 — 2026-09-06
+
+- Minimise `.build-deps` to `build-base + abseil-cpp-dev + re2-dev`.
+  On base 20.2.0, `openssl-dev` demands libcrypto3-3.5.8 while world
+  pins 3.5.6, which fails apk resolution. Everything else in
+  omnigent's dep tree ships musllinux wheels so the extra -dev
+  packages weren't needed anyway.
+
 ## 0.1.9 — 2026-09-06
 
 - Pin base image to `hassio-addons/base:20.2.0` (Alpine 3.22 + Python
