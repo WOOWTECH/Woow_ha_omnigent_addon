@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.15 — 2026-09-06
+
+Fix black-screen crash on Settings > Members / Policies / Sharing (and
+any other lazily-loaded route that pulls its own JS/CSS chunk). The
+Vite modulepreload helper Fe() constructs URLs as `` `/` + chunkName``
+— under Ingress that resolves to origin `/assets/foo.js` and 404s,
+throwing `Unable to preload CSS` which crashes React.
+
+Two coordinated fixes:
+
+1. **Dockerfile sed patch on Vite Fe() helper** — prefix with
+   `window.__INGRESS_PATH__` so modulepreload URLs land inside the
+   ingress iframe.
+2. **Broader nginx sub_filter** — catch every quoting style
+   (`` "assets/`, `'assets/`, `"/assets/`, `'/assets/`, `` `/assets/``,
+   and their leading-slash-less variants used by Vite's chunk
+   manifest strings) and rewrite to `/assets-v0-1-13/…` in both the
+   parent `location /` and the versioned `location /assets-v0-1-13/`
+   proxy.
+
 ## 0.1.14 — 2026-09-06
 
 🎉 **HA Ingress panel now 100% functional.** Full feature parity with

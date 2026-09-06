@@ -129,6 +129,7 @@ RUN find /usr/lib/python3.12/site-packages/omnigent/server/static/web-ui/assets 
         -e 's#e===`/login`||e===`/register`||e.startsWith(`/auth/login`)#e===`/login`||e===`/register`||e.startsWith(`/auth/login`)||e.endsWith(`/login`)||e.endsWith(`/register`)||e.indexOf(`/auth/login`)!==-1#g' \
         -e 's#let t=encodeURIComponent(window.location.pathname+window.location.search)#let t=encodeURIComponent((window.__INGRESS_PATH__||"")+window.location.pathname+window.location.search)#g' \
         -e 's#window.location.href=`${e}?return_to=${t}`#window.location.href=(window.__INGRESS_PATH__||"")+e+"?return_to="+t#g' \
+        -e 's#Fe=function(e){return`/`+e}#Fe=function(e){return(window.__INGRESS_PATH__||"")+"/"+e}#g' \
         {} + \
  && echo "auth-guard sed patches applied. verify:" \
  && grep -R -l 'window.__INGRESS_PATH__' \
