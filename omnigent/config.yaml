@@ -1,5 +1,5 @@
 name: Woow Omnigent
-version: 0.1.1
+version: 0.1.2
 slug: woow-omnigent
 image: ghcr.io/woowtech/woow-ha-omnigent-{arch}
 description: >-
@@ -10,8 +10,9 @@ description: >-
 url: https://github.com/WOOWTECH/Woow_ha_omnigent_addon
 arch: [amd64, aarch64]
 init: false
-# No supervisor/HA API needed — omnigent is self-contained.
-hassio_api: false
+# bashio::config talks to the Supervisor API to read /data/options.json,
+# so hassio_api must be true even though our own code doesn't call it.
+hassio_api: true
 homeassistant_api: false
 ingress: true
 ingress_port: 8080

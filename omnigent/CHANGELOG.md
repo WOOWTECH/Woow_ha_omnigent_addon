@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2 — 2026-09-06
+
+- Re-enable `hassio_api: true`. `bashio::config` fetches
+  `/data/options.json` via the Supervisor API, so disabling it breaks
+  `init-addon-config` at boot (`Unable to access the API, forbidden`).
+
 ## 0.1.1 — 2026-09-06
 
 - `base_url` schema relaxed from `url?` to `str?` so an empty string
