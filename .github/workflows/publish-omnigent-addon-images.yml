@@ -76,3 +76,14 @@ jobs:
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha,scope=omnigent-${{ matrix.arch }}
           cache-to: type=gha,scope=omnigent-${{ matrix.arch }},mode=max
+
+  # The App Store ships only published Releases (registry ref_policy: release).
+  # After the checks above pass on main, the Store's shared workflow publishes
+  # the Release for a config.yaml version that has none yet.
+  release:
+    name: Release
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    uses: WOOWTECH/Woow_HA_App_Store/.github/workflows/woow-addon-release.yml@main
