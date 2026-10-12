@@ -7,11 +7,11 @@
       "name": "Woow Omnigent",
       "version": "0.1.15",
       "repository": "WOOWTECH/Woow_ha_omnigent_addon",
-      "source_sha": "4a2f012c44ee86f2c5889412f88ec01b4b7ff757",
+      "source_sha": "b23bfbf587f7d206bbc8480b96990ab1397b0151",
       "source_path": "omnigent",
       "config_file": "config.yaml",
       "config_sha256": "sha256:c1246556a8c3004dba50aa18b10f6706e4130e7e1286a15db9998d95a697101d",
-      "archive_sha256": "sha256:da8995719c3e87ff23b4591ecca24220bf13bd6792c62fa5ca00ff5af2c183de",
+      "archive_sha256": "sha256:4be637db05ebdf4643b80ecb1544b170a15fdaa8eaccc92109e2e97e2ee535fa",
       "context_fingerprint": "sha256:324236bf6c3fe26d33ff16545e69f447babe1e1f2b5b539dae076f650733a84d",
       "material_fingerprint": "sha256:969af37b50c41a47ceb924aa86634e64cfc0866d7f1182a43aa1e22539920dbf",
       "architectures": [
@@ -102,7 +102,7 @@
       },
       "delivery": "published-image",
       "validation": "manifest+architecture-images+configured-CI",
-      "publisher_run_id": "37410512898",
+      "publisher_run_id": "38209693011",
       "channel": "stable"
     }
   }
