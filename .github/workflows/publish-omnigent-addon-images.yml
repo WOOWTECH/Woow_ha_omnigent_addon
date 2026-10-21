@@ -1,30 +1,38 @@
 name: Publish omnigent add-on images
 
+# Pull requests: check the manifest and build both images without pushing; the
+# amd64 image is also started once (`omnigent --version`). Job names are fixed
+# (`build (amd64)`, `build (aarch64)`) so they can be required checks.
+#
+# main: a version's images are immutable. When ghcr.io already has the
+# config.yaml version for an architecture, that image is reused, not rebuilt or
+# re-pushed (same as Woow_ha_odoo release.yml). Only the version tag is pushed;
+# there is no `latest` tag (Supervisor pulls `image:` at the config.yaml version).
+# To ship a change, bump config.yaml's version.
+
 on:
+  pull_request:
   push:
     branches: [main]
     paths:
       - "omnigent/**"
       - ".github/workflows/publish-omnigent-addon-images.yml"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Extra tag to push (e.g. 0.1.0). 'latest' is always added on main."
-        required: false
-        default: ""
 
-# Prevent stacked runs on rapid pushes clobbering each other.
 concurrency:
   group: publish-omnigent-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   build:
+    name: build (${{ matrix.arch }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       fail-fast: false
       matrix:
@@ -35,40 +43,65 @@ jobs:
           - arch: aarch64
             platform: linux/arm64
             base: ghcr.io/hassio-addons/base/aarch64:20.2.0
+    env:
+      IMAGE: ghcr.io/woowtech/woow-ha-omnigent-${{ matrix.arch }}
+      PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check the manifest
+        id: v
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          for key in name version slug image arch; do
+            [ "$(yq -r ".${key} // \"\"" omnigent/config.yaml)" != "" ] || { echo "::error::omnigent/config.yaml has no ${key}"; exit 1; }
+          done
+          [ "$(yq -r '.image' omnigent/config.yaml)" = 'ghcr.io/woowtech/woow-ha-omnigent-{arch}' ] \
+            || { echo "::error::omnigent/config.yaml image is not ghcr.io/woowtech/woow-ha-omnigent-{arch}"; exit 1; }
+          yq -e ".arch[] | select(. == \"${ARCH}\")" omnigent/config.yaml >/dev/null \
+            || { echo "::error::omnigent/config.yaml does not list ${ARCH}"; exit 1; }
+          echo "version=$(yq -r '.version' omnigent/config.yaml)" >> "$GITHUB_OUTPUT"
+
+      - name: Reuse an image that is already published
+        id: existing
+        if: env.PUBLISH == 'true'
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          if docker buildx imagetools inspect "${IMAGE}:${VERSION}" >/dev/null 2>&1; then
+            echo "${IMAGE}:${VERSION} already exists; reusing it (not rebuilt, not pushed)"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "${IMAGE}:${VERSION} not published yet; will build and push"
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: docker/setup-qemu-action@v3
+        if: steps.existing.outputs.exists != 'true'
       - uses: docker/setup-buildx-action@v3
+        if: steps.existing.outputs.exists != 'true'
 
       - name: Log in to GHCR
+        if: env.PUBLISH == 'true' && steps.existing.outputs.exists != 'true'
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute version
-        id: v
-        run: |
-          set -eu
-          # Prefer config.yaml so image tag matches the add-on the Supervisor pulls.
-          VERSION=$(grep -E '^version:' omnigent/config.yaml | awk '{print $2}' | tr -d '"')
-          [ -n "${VERSION}" ] || VERSION=dev
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Build + push (${{ matrix.arch }})
+      - name: Build (${{ matrix.arch }})
+        if: steps.existing.outputs.exists != 'true'
         uses: docker/build-push-action@v5
         with:
           context: ./omnigent
           file: ./omnigent/Dockerfile
           platforms: ${{ matrix.platform }}
-          push: true
-          # Per-arch tag — the manifest job below wires them into a single
-          # multi-arch index that matches the `image:` field in config.yaml.
-          tags: |
-            ghcr.io/woowtech/woow-ha-omnigent-${{ matrix.arch }}:${{ steps.v.outputs.version }}
-            ghcr.io/woowtech/woow-ha-omnigent-${{ matrix.arch }}:latest
+          push: ${{ env.PUBLISH == 'true' }}
+          load: ${{ env.PUBLISH != 'true' && matrix.arch == 'amd64' }}
+          tags: ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
           build-args: |
             BUILD_FROM=${{ matrix.base }}
             BUILD_ARCH=${{ matrix.arch }}
@@ -76,6 +109,16 @@ jobs:
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha,scope=omnigent-${{ matrix.arch }}
           cache-to: type=gha,scope=omnigent-${{ matrix.arch }},mode=max
+
+      - name: Test the amd64 image
+        if: env.PUBLISH != 'true' && matrix.arch == 'amd64'
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker image inspect "${IMAGE}:${VERSION}" \
+            --format '{{ index .Config.Labels "io.hass.version" }}' | grep -Fx "${VERSION}"
+          docker run --rm --entrypoint omnigent "${IMAGE}:${VERSION}" --version
 
   # The App Store ships only published Releases (registry ref_policy: release).
   # After the checks above pass on main, the Store's shared workflow publishes
