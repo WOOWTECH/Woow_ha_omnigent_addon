@@ -1,5 +1,0 @@
-"0.1.16":
-  breaking:
-    - change: option-removed
-      key: base_url
-      migration: Test entry for pipeline #120; not a real change.
