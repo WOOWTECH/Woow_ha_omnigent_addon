@@ -136,12 +136,19 @@ jobs:
   # not declared in omnigent/upgrade-notes.yaml blocks it, and so does a new
   # fixable Critical/High vulnerability in the amd64 image (the SBOM from
   # build (amd64) against the Release's GHCR image) unless that file accepts
-  # it. A PR that changes no version passes in seconds; on push the job
-  # passes at once, so this workflow's non-PR run (registry
+  # it. No needs: on the build, so a PR that changes no version passes in
+  # seconds; after a version bump the job waits for this run's SBOM artifact
+  # (actions: read) and fails if build (amd64) never uploads it. On push the
+  # job passes at once, so this workflow's non-PR run (registry
   # required_workflows) still succeeds. Reported as "Upgrade comparison / compare".
+  # The PR build reads the same gha cache scope as the main build that ships
+  # (PRs can read main's cache, main never reads a PR's), so the SBOM is of
+  # the layers the Release build reuses.
   upgrade-comparison:
     name: Upgrade comparison
-    needs: build
+    permissions:
+      contents: read
+      actions: read
     uses: WOOWTECH/Woow_HA_App_Store/.github/workflows/woow-addon-upgrade-check.yml@feat/89-upgrade-comparison
     with:
       tooling_ref: feat/89-upgrade-comparison
