@@ -2,7 +2,8 @@ name: Publish omnigent add-on images
 
 # Pull requests: check the manifest and build both images without pushing; the
 # amd64 image is also started once (`omnigent --version`). Job names are fixed
-# (`build (amd64)`, `build (aarch64)`) so they can be required checks.
+# (`build (amd64)`, `build (aarch64)`, `Upgrade comparison / compare`) so they
+# can be required checks.
 #
 # main: a version's images are immutable. When ghcr.io already has the
 # config.yaml version for an architecture, that image is reused, not rebuilt or
@@ -119,6 +120,32 @@ jobs:
           docker image inspect "${IMAGE}:${VERSION}" \
             --format '{{ index .Config.Labels "io.hass.version" }}' | grep -Fx "${VERSION}"
           docker run --rm --entrypoint omnigent "${IMAGE}:${VERSION}" --version
+
+      # The SBOM of this image is what the Upgrade comparison scans as the
+      # new version (pipeline #89, category 4): pinned Syft from the Store,
+      # uploaded as artifact upgrade-comparison-sbom-woow-omnigent.
+      - name: SBOM for the upgrade comparison
+        if: github.event_name == 'pull_request' && matrix.arch == 'amd64'
+        uses: WOOWTECH/Woow_HA_App_Store/.github/actions/addon-sbom@feat/89-upgrade-comparison
+        with:
+          component: woow-omnigent
+          image: ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
+
+  # Upgrade comparison (pipeline #89): a PR that bumps the add-on version is
+  # compared with the latest formal Release. A breaking config.yaml change
+  # not declared in omnigent/upgrade-notes.yaml blocks it, and so does a new
+  # fixable Critical/High vulnerability in the amd64 image (the SBOM from
+  # build (amd64) against the Release's GHCR image) unless that file accepts
+  # it. A PR that changes no version passes in seconds; on push the job
+  # passes at once, so this workflow's non-PR run (registry
+  # required_workflows) still succeeds. Reported as "Upgrade comparison / compare".
+  upgrade-comparison:
+    name: Upgrade comparison
+    needs: build
+    uses: WOOWTECH/Woow_HA_App_Store/.github/workflows/woow-addon-upgrade-check.yml@feat/89-upgrade-comparison
+    with:
+      tooling_ref: feat/89-upgrade-comparison
+      sbom_artifact: upgrade-comparison-sbom-*
 
   # The App Store ships only published Releases (registry ref_policy: release).
   # After the checks above pass on main, the Store's shared workflow publishes
