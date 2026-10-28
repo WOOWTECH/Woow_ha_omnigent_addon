@@ -9,10 +9,12 @@ release mechanism is described in the Woow_HA_App_Store README (section
    Push a branch, open a PR, wait for the required checks, then merge.
 2. **A PR that changes an addon version is a release.** Merging it publishes
    that version to the WOOW App Store. It must pass every required check; the
-   checks are the approval, there is no human review step. One of them is
-   `Upgrade comparison / compare` (pipeline #89): it compares each addon whose
-   version the PR changes with the latest formal Release. A PR that changes
-   no version passes it in seconds. The result is in the job summary.
+   checks are the approval, there is no human review step. Every PR also
+   runs `Upgrade comparison / compare` (pipeline #89): it compares each addon
+   whose version the PR changes with the latest formal Release. It becomes a
+   required check once it is added to the ruleset (pipeline #120); treat a
+   failure as blocking already. A PR that changes no version passes it in
+   seconds. The result is in the job summary.
 3. **Breaking changes must be declared in `upgrade-notes.yaml`** next to the
    addon's `config.yaml` (here `omnigent/upgrade-notes.yaml`), with the
    migration path. Create the file only when something needs declaring. The
@@ -37,7 +39,8 @@ release mechanism is described in the Woow_HA_App_Store README (section
    ```
 
    Only sections newer than the latest formal Release and up to the new
-   version count. `migration` and `reason` must not be empty. The report
+   version count. `migration` and `reason` must not be empty. A declaration
+   for which the check finds no matching change is only reported. The report
    prints a ready-to-paste entry for each finding. The release puts these
    entries on the GitHub Release under 破壞性變更與遷移方式 and 已接受的漏洞.
    Full rules: the Woow_HA_App_Store README, section
