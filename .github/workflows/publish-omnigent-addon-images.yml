@@ -123,7 +123,8 @@ jobs:
 
       # The SBOM of this image is what the Upgrade comparison scans as the
       # new version (pipeline #89, category 4): pinned Syft from the Store,
-      # uploaded as artifact upgrade-comparison-sbom-woow-omnigent-attempt-<run attempt>.
+      # uploaded as the artifact the comparison waits for (name: see the Store
+      # addon-sbom action).
       - name: SBOM for the upgrade comparison
         if: github.event_name == 'pull_request' && matrix.arch == 'amd64'
         # TODO: switch to @main after WOOWTECH/Woow_HA_App_Store#72 merges.
@@ -134,7 +135,8 @@ jobs:
 
   # Upgrade comparison (pipeline #89): rules and caller contract are in the Store
   # workflow header and Store README "升版比對與 `upgrade-notes.yaml`". The PR build
-  # shares main's gha cache scope, so the SBOM is of the layers Release reuses.
+  # starts from main's gha cache, so unchanged layers match main's; layers the PR
+  # rebuilds are rebuilt again on main after merge and may differ from Release's.
   upgrade-comparison:
     name: Upgrade comparison
     permissions:
