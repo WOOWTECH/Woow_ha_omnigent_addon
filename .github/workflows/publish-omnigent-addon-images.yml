@@ -137,8 +137,8 @@ jobs:
   # workflow header and Store README "升版比對與 `upgrade-notes.yaml`". The PR build
   # starts from main's gha cache when one exists (entries unused for 7 days are
   # evicted, and main skips the build once the version's image exists), so
-  # unchanged layers match main's; layers the PR rebuilds are rebuilt again on
-  # main after merge and may differ from Release's.
+  # unchanged layers match main's; for the layers the PR rebuilds, the PR's SBOM
+  # may differ from the Stable Release image.
   upgrade-comparison:
     name: Upgrade comparison
     permissions:

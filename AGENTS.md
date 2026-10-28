@@ -14,7 +14,9 @@ release mechanism is described in the Woow_HA_App_Store README (section
    whose version the PR changes with the latest Stable Release. It becomes a
    required check once it is added to the ruleset (pipeline #120); treat a
    failure as blocking already. A PR that changes no version passes it in
-   seconds. The result is in the job summary.
+   seconds. The result is in the job summary. To re-run it, use "Re-run all
+   jobs", not "Re-run failed jobs": a re-run judges its own build, and an
+   earlier attempt's SBOM is not used.
 3. **Breaking changes must be declared in `upgrade-notes.yaml`** next to the
    addon's `config.yaml` (here `omnigent/upgrade-notes.yaml`), with the
    migration path. Create the file only when something needs declaring. The
@@ -26,24 +28,25 @@ release mechanism is described in the Woow_HA_App_Store README (section
    the amd64 image unless it is accepted with a reason. Format:
 
    ```yaml
-   "1.3.0":                       # the new version, quoted
+   "0.1.16":                      # the new version, quoted
      breaking:
        - change: option-removed   # change and key exactly as the report shows
          key: base_url            # schema path, e.g. features; the arch,
                                   # the port (8000/tcp) or `image`
-         migration: Set the public URL under env_vars instead.
+         migration: Add an env_vars entry OMNIGENT_ACCOUNTS_BASE_URL with the public URL.
      accepted_vulnerabilities:
        - id: CVE-2026-1234        # id and package exactly as the report shows
          package: openssl
-         reason: Upstream base image not updated yet; replaced in 1.3.1.
+         reason: Upstream base image not updated yet; replaced in 0.1.17.
    ```
 
    Only sections newer than the latest Stable Release and up to the new
    version count. `migration` and `reason` must not be empty. A declaration
    for which the check finds no matching change is only reported. The report
    prints a ready-to-paste entry for each undeclared breaking change. Once
-   WOOWTECH/Woow_HA_App_Store#72 merges, the release also puts these entries
-   on the GitHub Release under 破壞性變更與遷移方式 and 已接受的漏洞.
+   WOOWTECH/Woow_HA_App_Store#72 merges, the release workflow
+   (`woow-addon-release.yml`) also puts these entries on the GitHub Release
+   under 破壞性變更與遷移方式 and 已接受的漏洞.
    Full rules: the Woow_HA_App_Store README, section
    "升版比對與 `upgrade-notes.yaml`", and the docstring of that repo's
    `.addon-sync/upgrade_check.py`; the docstring wins on any difference.
