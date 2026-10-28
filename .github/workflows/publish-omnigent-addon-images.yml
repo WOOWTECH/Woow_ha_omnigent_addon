@@ -122,9 +122,9 @@ jobs:
           docker run --rm --entrypoint omnigent "${IMAGE}:${VERSION}" --version
 
       # The SBOM of this image is what the Upgrade comparison scans as the
-      # new version (pipeline #89, category 4): pinned Syft from the Store,
-      # uploaded as the artifact the comparison waits for (name: see the Store
-      # addon-sbom action).
+      # new version (pipeline #89, vulnerability comparison): pinned Syft from
+      # the Store, uploaded as the artifact the comparison waits for (name: see
+      # the Store addon-sbom action).
       - name: SBOM for the upgrade comparison
         if: github.event_name == 'pull_request' && matrix.arch == 'amd64'
         # TODO: switch to @main after WOOWTECH/Woow_HA_App_Store#72 merges.
@@ -135,8 +135,10 @@ jobs:
 
   # Upgrade comparison (pipeline #89): rules and caller contract are in the Store
   # workflow header and Store README "升版比對與 `upgrade-notes.yaml`". The PR build
-  # starts from main's gha cache, so unchanged layers match main's; layers the PR
-  # rebuilds are rebuilt again on main after merge and may differ from Release's.
+  # starts from main's gha cache when one exists (entries unused for 7 days are
+  # evicted, and main skips the build once the version's image exists), so
+  # unchanged layers match main's; layers the PR rebuilds are rebuilt again on
+  # main after merge and may differ from Release's.
   upgrade-comparison:
     name: Upgrade comparison
     permissions:
