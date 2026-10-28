@@ -29,9 +29,9 @@ release mechanism is described in the Woow_HA_App_Store README (section
    "1.3.0":                       # the new version, quoted
      breaking:
        - change: option-removed   # change and key exactly as the report shows
-         key: ssl_port            # schema path, e.g. database.port; the arch,
-                                  # the port (8069/tcp) or `image`
-         migration: Use the 443/tcp port mapping instead.
+         key: base_url            # schema path, e.g. features; the arch,
+                                  # the port (8000/tcp) or `image`
+         migration: Set the public URL under env_vars instead.
      accepted_vulnerabilities:
        - id: CVE-2026-1234        # id and package exactly as the report shows
          package: openssl
@@ -41,8 +41,9 @@ release mechanism is described in the Woow_HA_App_Store README (section
    Only sections newer than the latest Stable Release and up to the new
    version count. `migration` and `reason` must not be empty. A declaration
    for which the check finds no matching change is only reported. The report
-   prints a ready-to-paste entry for each finding. The release puts these
-   entries on the GitHub Release under 破壞性變更與遷移方式 and 已接受的漏洞.
+   prints a ready-to-paste entry for each undeclared breaking change. Once
+   WOOWTECH/Woow_HA_App_Store#72 merges, the release also puts these entries
+   on the GitHub Release under 破壞性變更與遷移方式 and 已接受的漏洞.
    Full rules: the Woow_HA_App_Store README, section
    "升版比對與 `upgrade-notes.yaml`", and the docstring of that repo's
    `.addon-sync/upgrade_check.py`; the docstring wins on any difference.
