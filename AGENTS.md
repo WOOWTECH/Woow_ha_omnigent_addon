@@ -43,10 +43,9 @@ release mechanism is described in the Woow_HA_App_Store README (section
    Only sections newer than the latest Stable Release and up to the new
    version count. `migration` and `reason` must not be empty. A declaration
    for which the check finds no matching change is only reported. The report
-   prints a ready-to-paste entry for each undeclared breaking change. Once
-   WOOWTECH/Woow_HA_App_Store#72 merges, the release workflow
-   (`woow-addon-release.yml`) also puts these entries on the GitHub Release
-   under 破壞性變更與遷移方式 and 已接受的漏洞.
+   prints a ready-to-paste entry for each undeclared breaking change. The
+   release workflow (`woow-addon-release.yml`) puts these entries on the
+   GitHub Release under 破壞性變更與遷移方式 and 已接受的漏洞.
    Full rules: the Woow_HA_App_Store README, section
    "升版比對與 `upgrade-notes.yaml`", and the docstring of that repo's
    `.addon-sync/upgrade_check.py`; upgrade_check.py wins on any difference.

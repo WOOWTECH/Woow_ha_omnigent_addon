@@ -127,8 +127,7 @@ jobs:
       # the Store addon-sbom action).
       - name: SBOM for the upgrade comparison
         if: github.event_name == 'pull_request' && matrix.arch == 'amd64'
-        # TODO: switch to @main after WOOWTECH/Woow_HA_App_Store#72 merges.
-        uses: WOOWTECH/Woow_HA_App_Store/.github/actions/addon-sbom@feat/89-upgrade-comparison
+        uses: WOOWTECH/Woow_HA_App_Store/.github/actions/addon-sbom@main
         with:
           component: woow-omnigent
           image: ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
@@ -144,11 +143,8 @@ jobs:
     permissions:
       contents: read
       actions: read
-    # TODO: switch to @main and drop tooling_ref after WOOWTECH/Woow_HA_App_Store#72 merges.
-    uses: WOOWTECH/Woow_HA_App_Store/.github/workflows/woow-addon-upgrade-check.yml@feat/89-upgrade-comparison
+    uses: WOOWTECH/Woow_HA_App_Store/.github/workflows/woow-addon-upgrade-check.yml@main
     with:
-      # TODO: drop after WOOWTECH/Woow_HA_App_Store#72 merges (default is main).
-      tooling_ref: feat/89-upgrade-comparison
       sbom_artifact: upgrade-comparison-sbom-*
 
   # The App Store ships only published Releases (registry ref_policy: release).
