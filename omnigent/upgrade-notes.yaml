@@ -1,0 +1,7 @@
+"0.1.16":
+  breaking:
+    - change: option-removed
+      key: base_url
+      migration: >-
+        TEST ONLY (pipeline #120, not merged). Remove base_url from the add-on
+        options before upgrading.
