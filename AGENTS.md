@@ -47,5 +47,7 @@ release mechanism is described in the Woow_HA_App_Store README (section
    release workflow (`woow-addon-release.yml`) puts these entries on the
    GitHub Release under 破壞性變更與遷移方式 and 已接受的漏洞.
    Full rules: the Woow_HA_App_Store README, section
-   "升版比對與 `upgrade-notes.yaml`", and the docstring of that repo's
-   `.addon-sync/upgrade_check.py`; upgrade_check.py wins on any difference.
+   "升版比對與 `upgrade-notes.yaml`"; the change names and when the check
+   blocks, in the docstring of that repo's `.addon-sync/upgrade_check.py`;
+   the file format, version order and Release notes, in the comment above
+   `REBUILD` in `.addon-sync/addon_sync.py`. The code wins on any difference.
