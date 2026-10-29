@@ -1,5 +1,5 @@
 name: Woow Omnigent
-version: 0.1.15
+version: 0.1.16
 slug: woow-omnigent
 image: ghcr.io/woowtech/woow-ha-omnigent-{arch}
 description: >-
@@ -51,7 +51,6 @@ schema:
   # Only set this if you have a Cloudflared add-on route pointing at us —
   # runners registered via that URL use it in webhook links and invite URLs.
   # Leave empty to use http://homeassistant.local:8000 (LAN default).
-  base_url: str?
   # --- Feature flags forwarded via OMNIGENT_FEATURES= ---------------------
   # Comma-separated. Defaults to "usage_page,harness_install" (every known
   # feature in omnigent 0.12.0). Unknown feature keys make the server
@@ -64,7 +63,6 @@ schema:
 options:
   admin_username: woow
   admin_password: woowtech2026
-  base_url: ""
   features: "usage_page,harness_install"
   env_vars: []
 # No `services:` — Postgres is bundled inside the container via s6 (same
