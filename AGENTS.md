@@ -18,21 +18,18 @@ release mechanism is described in the Woow_HA_App_Store README (section
    jobs", not "Re-run failed jobs": a re-run judges its own build, and an
    earlier attempt's SBOM is not used.
 3. **Breaking changes must be declared in `upgrade-notes.yaml`** next to the
-   addon's `config.yaml` (here `omnigent/upgrade-notes.yaml`), with the
-   migration path. Create the file only when something needs declaring. The
-   upgrade comparison blocks any breaking change without a matching entry:
-   `option-removed`, `schema-removed`, `schema-retyped`, `made-required`,
-   `range-narrowed`, `enum-value-removed`, `required-added`, `arch-removed`,
-   `port-removed`, `image-changed`. Changed defaults and host ports are only
-   reported. It also blocks a new fixable Critical or High vulnerability in
-   the amd64 image unless it is accepted with a reason. Format:
+   addon's `config.yaml` (here `omnigent/upgrade-notes.yaml`). Create the
+   file only when the upgrade comparison asks for it: it blocks a breaking
+   change without a matching entry, and a new fixable Critical or High
+   vulnerability that is not accepted. For a breaking change the report
+   prints a ready-to-paste entry; add the migration path. `migration` and
+   `reason` must not be empty.
 
    ```yaml
    "0.1.16":                      # the new version, quoted
      breaking:
        - change: option-removed   # change and key exactly as the report shows
-         key: base_url            # schema path, e.g. features; the arch,
-                                  # the port (8000/tcp) or `image`
+         key: base_url
          migration: Add an env_vars entry OMNIGENT_ACCOUNTS_BASE_URL with the public URL.
      accepted_vulnerabilities:
        - id: CVE-2026-1234        # id and package exactly as the report shows
@@ -40,14 +37,9 @@ release mechanism is described in the Woow_HA_App_Store README (section
          reason: Upstream base image not updated yet; replaced in 0.1.17.
    ```
 
-   Only sections newer than the latest Stable Release and up to the new
-   version count. `migration` and `reason` must not be empty. A declaration
-   for which the check finds no matching change is only reported. The report
-   prints a ready-to-paste entry for each undeclared breaking change. The
-   release workflow (`woow-addon-release.yml`) puts these entries on the
-   GitHub Release under 破壞性變更與遷移方式 and 已接受的漏洞.
-   Full rules: the Woow_HA_App_Store README, section
-   "升版比對與 `upgrade-notes.yaml`"; the change names and when the check
-   blocks, in the docstring of that repo's `.addon-sync/upgrade_check.py`;
-   the file format, version order and Release notes, in the comment above
-   `REBUILD` in `.addon-sync/addon_sync.py`. The code wins on any difference.
+   The change names, which sections count and how the entries appear on the
+   GitHub Release: the Woow_HA_App_Store README, section
+   "升版比對與 `upgrade-notes.yaml`". The code wins on any difference:
+   `.addon-sync/upgrade_check.py` (change names, when the check blocks) and
+   the comment above `REBUILD` in `.addon-sync/addon_sync.py` (file format,
+   version order, Release notes).
