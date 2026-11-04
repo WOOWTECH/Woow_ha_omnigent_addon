@@ -158,8 +158,9 @@ jobs:
     permissions:
       contents: read
       actions: read
-    uses: WOOWTECH/Woow_HA_App_Store/.github/workflows/woow-addon-upgrade-check.yml@main
+    uses: WOOWTECH/Woow_HA_App_Store/.github/workflows/woow-addon-upgrade-check.yml@feat/157-test-options
     with:
+      tooling_ref: feat/157-test-options
       sbom_artifact: upgrade-comparison-sbom-*
       image_artifact: upgrade-comparison-image-*
 
