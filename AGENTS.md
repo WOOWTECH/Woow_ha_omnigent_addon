@@ -12,10 +12,16 @@ release mechanism is described in the Woow_HA_App_Store README (section
    checks are the approval, there is no human review step. Every PR runs
    `Upgrade comparison / compare` (pipeline #89); treat a failure as blocking.
    It compares each addon whose version the PR changes with the latest Stable
-   Release. A PR that changes no version passes it in seconds. The result is
-   in the job summary. To re-run it, use "Re-run all jobs", not
+   Release. It also runs the upgrade test (pipeline #143): the Release's image,
+   then this PR's amd64 image on the same data directories, under a mock
+   Supervisor; the new version must start (here: the watchdog `/health` on port
+   8080 answers and the container stays up). For now it checks startup only,
+   not data. Data-check hooks, when added, go in `omnigent/upgrade-check/`;
+   their interface is defined by pipeline #138 and will be documented in the
+   Woow_HA_App_Store README. A PR that changes no version passes it in seconds.
+   The result is in the job summary. To re-run it, use "Re-run all jobs", not
    "Re-run failed jobs": a re-run judges its own build, and an earlier
-   attempt's SBOM is not used.
+   attempt's SBOM and image are not used.
 3. **Breaking changes must be declared in `upgrade-notes.yaml`** next to the
    addon's `config.yaml` (here `omnigent/upgrade-notes.yaml`). Create the file
    only when the upgrade comparison asks for it; copy `change` and `key` from

@@ -132,12 +132,27 @@ jobs:
           component: woow-omnigent
           image: ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
 
+      # The same image is the new version of the upgrade test (pipeline
+      # #143, category 2): saved and uploaded as artifact
+      # upgrade-comparison-image-woow-omnigent-attempt-<run attempt>,
+      # so the comparison neither rebuilds it nor needs a PR tag on GHCR.
+      - name: Image for the upgrade test
+        if: github.event_name == 'pull_request' && matrix.arch == 'amd64'
+        uses: WOOWTECH/Woow_HA_App_Store/.github/actions/addon-image@main
+        with:
+          component: woow-omnigent
+          image: ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
+
   # Upgrade comparison (pipeline #89): rules and caller contract are in the Store
   # workflow header and Store README "升版比對與 `upgrade-notes.yaml`". The PR build
   # starts from main's gha cache when one exists (entries unused for 7 days are
   # evicted, and main skips the build once the version's image exists), so
   # unchanged layers match main's; for the layers the PR rebuilds, the PR's SBOM
   # may differ from the image main builds and releases for this version.
+  # The upgrade test (#137, #143) starts the Release's GHCR image, then this
+  # PR's image (the amd64 build's image artifact) on the same /data and map
+  # directories; a new version that does not start blocks. Startup only, no
+  # data check yet. After a version bump it also waits for this run's image.
   upgrade-comparison:
     name: Upgrade comparison
     permissions:
@@ -146,6 +161,7 @@ jobs:
     uses: WOOWTECH/Woow_HA_App_Store/.github/workflows/woow-addon-upgrade-check.yml@main
     with:
       sbom_artifact: upgrade-comparison-sbom-*
+      image_artifact: upgrade-comparison-image-*
 
   # The App Store ships only published Releases (registry ref_policy: release).
   # After the checks above pass on main, the Store's shared workflow publishes
