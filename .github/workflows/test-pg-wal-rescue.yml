@@ -1,0 +1,46 @@
+name: Test pg_wal rescue
+
+# 離線測試 omnigent/rootfs/usr/local/bin/pg-wal-rescue：還原 0.1.17 以前、沒有 pg_wal 的備份後，
+# 乾淨關機的資料能重建 WAL 並起得來，非乾淨關機的資料不被動到；也檢查 config.yaml 不再排除 pg_wal。
+# 用 runner 內建的 PostgreSQL 16（與 add-on 同 major），不需要網路、secret 或 docker。
+# 獨立成一支 workflow，publish workflow 的 required check 名稱維持不變。
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - "omnigent/**"
+      - ".github/workflows/test-pg-wal-rescue.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: test-pg-wal-rescue-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pg_wal rescue
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Make sure PostgreSQL 16 is installed
+        run: |
+          if [ ! -x /usr/lib/postgresql/16/bin/pg_resetwal ] || [ ! -x /usr/lib/postgresql/16/bin/psql ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends postgresql-16 postgresql-client-16
+          fi
+          /usr/lib/postgresql/16/bin/pg_ctl --version
+
+      - name: Run the test (dash)
+        run: sh omnigent/tests/test-pg-wal-rescue.sh
+
+      - name: Run the test (busybox sh, as in the add-on)
+        run: |
+          command -v busybox >/dev/null || { sudo apt-get update && sudo apt-get install -y --no-install-recommends busybox; }
+          TEST_SH="busybox sh" sh omnigent/tests/test-pg-wal-rescue.sh

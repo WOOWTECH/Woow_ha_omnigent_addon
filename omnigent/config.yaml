@@ -1,5 +1,5 @@
 name: Woow Omnigent
-version: 0.1.17
+version: 0.1.18
 slug: woow-omnigent
 image: ghcr.io/woowtech/woow-ha-omnigent-{arch}
 description: >-
@@ -40,9 +40,10 @@ map:
   - type: backup
     read_only: false
 backup: cold
+# pg_wal 必須留在備份裡：少了它，Postgres 還原後找不到最後一個 checkpoint，
+# 起不來（0.1.17 以前排除了它，那些備份由 pg-wal-rescue 在開機時補救）。
 backup_exclude:
   - "**/logs/**"
-  - "**/pg_wal/**"
 schema:
   # --- Admin identity ------------------------------------------------------
   admin_username: str

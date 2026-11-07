@@ -52,6 +52,14 @@ EOF
     chown ${PGUSER_SYSTEM}:${PGUSER_SYSTEM} "${PGDATA}/postgresql.conf" "${PGDATA}/pg_hba.conf"
 fi
 
+# --- 0.1.17 以前的備份沒有 pg_wal ----------------------------------------------
+# 還原這種備份後 postgres 起不來；乾淨關機的資料可以安全重建 WAL，
+# 否則停在這裡、不動資料。細節見 /usr/local/bin/pg-wal-rescue。
+su -s /bin/sh -c "/usr/local/bin/pg-wal-rescue ${PGBIN} ${PGDATA}" ${PGUSER_SYSTEM} || {
+    log "stopping: the data directory needs attention (see the pg-wal-rescue lines above)"
+    exit 1
+}
+
 # --- Ensure role + db present ------------------------------------------------
 # The postmaster isn't running yet during oneshot init, so start it in the
 # background just long enough to run the bootstrap SQL, then stop.

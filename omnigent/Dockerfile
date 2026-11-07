@@ -152,6 +152,7 @@ RUN chmod +x \
         /etc/s6-overlay/s6-rc.d/svc-omnigent-server/run \
         /etc/s6-overlay/s6-rc.d/init-admin-claim/run \
         /etc/s6-overlay/s6-rc.d/nginx/run \
+        /usr/local/bin/pg-wal-rescue \
  && chmod 0755 /etc/s6-overlay/s6-rc.d/*/type \
         /etc/s6-overlay/s6-rc.d/*/up 2>/dev/null || true
 

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.18 — 2026-11-07
+
+Fix: a restored backup starts again.
+
+- Backups left out `pg_wal` (`backup_exclude`). Postgres needs the WAL file
+  of its last checkpoint to start, so a restored backup stopped with
+  "PANIC: could not locate a valid checkpoint record". New backups include
+  `pg_wal`; logs are still excluded.
+- A backup made by 0.1.17 or earlier still lacks `pg_wal`. After restoring
+  one, update the add-on to 0.1.18: before Postgres starts, the add-on
+  checks for the missing WAL file and, when Postgres was shut down cleanly
+  (as it is for these cold backups), rebuilds the WAL with `pg_resetwal`.
+  No data is lost in that case. Otherwise the add-on stops with a clear
+  message and changes nothing.
+- Normal starts are unchanged: when the WAL is present the check does
+  nothing.
+- Backups get bigger by the size of `pg_wal` (usually tens of MB).
+- No change to options, schema, ports or the Omnigent version (0.12.0).
+
 ## 0.1.17 — 2026-11-07
 
 Fix: an existing install no longer stops after the update to 0.1.16.

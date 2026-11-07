@@ -94,12 +94,23 @@ the invite links match the public hostname.
 
 ## Backups
 
-Add-on backups include `/data` — that's the Postgres cluster, artifacts,
-admin credentials, and omnigent state. `pg_wal` + logs are excluded via
-`backup_exclude`.
+Add-on backups include `/data` — that's the Postgres cluster (with its
+`pg_wal`), artifacts, admin credentials, and omnigent state. Only logs are
+excluded via `backup_exclude`. The add-on is stopped while the backup is
+taken (`backup: cold`).
 
 Restoring a backup restores the DB and admin claim; runners re-register
 themselves on next handshake.
+
+**Backups made by 0.1.17 or earlier** left `pg_wal` out, so Postgres
+cannot start from them on its own. Home Assistant restores the add-on
+version recorded in the backup, so after restoring such a backup the
+add-on fails to start; update it to 0.1.18 or later. At start-up the
+add-on then rebuilds the missing WAL with `pg_resetwal`, which is safe
+because Postgres was shut down cleanly when the backup was taken. The log
+shows `[pg-wal-rescue] ... rebuilding the WAL`. If Postgres was not shut
+down cleanly, the add-on stops instead and changes nothing; the log says
+so. Take a new backup after updating: it includes `pg_wal`.
 
 ## Ports
 

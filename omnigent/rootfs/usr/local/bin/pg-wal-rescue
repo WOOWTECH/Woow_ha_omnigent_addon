@@ -1,0 +1,61 @@
+#!/bin/sh
+# pg-wal-rescue PGBIN PGDATA
+#
+# 0.1.17 以前的 add-on 備份用 backup_exclude 排除了 pg_wal。這種備份還原後，
+# postgres 找不到最後一個 checkpoint record，啟動就 PANIC：
+#   PANIC: could not locate a valid checkpoint record
+#
+# 本腳本在 postgres 啟動前檢查 checkpoint 所在的 WAL 檔還在不在：
+#   - 還在：什麼都不做（一般開機、或沒做過還原）。
+#   - 不在，且 pg_control 記錄上次是乾淨關機（cluster state = shut down）：
+#     資料都已寫進 data files，用 pg_resetwal 重建 WAL 不會丟資料。
+#   - 不在，但上次不是乾淨關機：重建 WAL 會丟掉還沒寫進 data files 的交易，
+#     所以不加 -f 硬做，exit 1 並說明原因。
+#
+# 以 postgres 使用者執行（pg_resetwal 拒絕以 root 執行）。只用 POSIX sh，
+# add-on 內是 busybox ash，CI 測試用 dash。
+set -eu
+
+PGBIN=$1
+PGDATA=$2
+
+log() { echo "[pg-wal-rescue] $*" >&2; }
+
+# 還沒 initdb 的 data dir 交給 init-postgres 處理。
+[ -f "${PGDATA}/global/pg_control" ] || exit 0
+
+# pg_controldata 的輸出會依 locale 翻譯，固定用 C 才能比對欄位名稱。
+if ! ctl=$(LC_ALL=C LANG=C "${PGBIN}/pg_controldata" -D "${PGDATA}" 2>&1); then
+    log "pg_controldata failed; leaving the data directory as it is:"
+    printf '%s\n' "$ctl" | sed 's/^/    /' >&2
+    exit 0
+fi
+state=$(printf '%s\n' "$ctl" | sed -n 's/^Database cluster state: *//p')
+redo=$(printf '%s\n' "$ctl" | sed -n "s/^Latest checkpoint's REDO WAL file: *//p")
+
+if [ -z "$redo" ]; then
+    log "pg_controldata did not report the REDO WAL file; leaving the data directory as it is"
+    exit 0
+fi
+
+if [ -f "${PGDATA}/pg_wal/${redo}" ]; then
+    exit 0
+fi
+
+log "the WAL file of the last checkpoint (pg_wal/${redo}) is missing; cluster state: ${state:-unknown}"
+log "this happens after restoring a backup made by add-on 0.1.17 or earlier, which left pg_wal out"
+
+if [ "$state" != "shut down" ]; then
+    log "FATAL: Postgres was not shut down cleanly when this data was saved, so its WAL cannot be"
+    log "rebuilt without losing transactions. The add-on stops here and changes nothing."
+    log "Restore a backup made by add-on 0.1.18 or later, or ask for help with this data directory."
+    exit 1
+fi
+
+# pg_resetwal 需要 pg_wal 與 pg_wal/archive_status 存在；備份排除後可能整個目錄都不在。
+mkdir -p "${PGDATA}/pg_wal/archive_status"
+chmod 700 "${PGDATA}/pg_wal" "${PGDATA}/pg_wal/archive_status"
+
+log "Postgres was shut down cleanly, so all data is in the data files; rebuilding the WAL with pg_resetwal"
+LC_ALL=C LANG=C "${PGBIN}/pg_resetwal" -D "${PGDATA}" >&2
+log "WAL rebuilt; Postgres can start"
