@@ -40,3 +40,7 @@ release mechanism is described in the Woow_HA_App_Store README (section
    release puts these entries on the GitHub Release. Rules, change names and
    the file format: the Woow_HA_App_Store README, section
    "升版比對與 `upgrade-notes.yaml`".
+
+To upgrade the bundled omnigent (`OMNIGENT_VERSION` in `omnigent/Dockerfile`),
+or to judge whether a new upstream release can be taken, follow
+`.claude/skills/omnigent-upgrade/SKILL.md`.
