@@ -62,7 +62,7 @@ $S/upstream-diff.sh v<FROM> v<TO> <上游 clone>     # 上游這段期間的變�
 3. **feature flag**：`config.yaml` 預設的清單是否還都認得？新版預設開啟哪些？⇒ 決定 options 預設值與註解要不要改。
 4. **CLI／API／env**：preflight 第 2–4 段有沒有 FAIL？⇒ 決定 s6 腳本要不要改。
 5. **依賴與 build**：Requires-Dist 新增了什麼？有沒有缺 musllinux wheel、要從 source build 的套件？⇒ 決定 Dockerfile 的 build-deps。
-6. **host 相容**：協定 major 有沒有變？tunnel 程式有沒有改？⇒ 決定 `DOCS.md` 要 runner 裝哪一版、要不要用舊 host 實連新 server。
+6. **host 相容**：協定 major 有沒有變？tunnel 程式有沒有改？Hermes plugin 釘的 SDK 連 TO 的 server，server-contract 測試過不過（見 `references/upstream-diff.md` 的「Hermes plugin」）？⇒ 決定 `DOCS.md` 要 runner 裝哪一版、要不要用舊 host 實連新 server。
 7. **回滾**：使用者怎麼退回？一律是「還原更新前的備份」。把 `alembic_version` 改回舊值的 DB 層回滾，遇到沒有 `IF NOT EXISTS` 的 `add_column`，之後再升級會撞錯，所以不列為選項。
 
 ### H2 改版 PR

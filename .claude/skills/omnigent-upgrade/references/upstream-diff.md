@@ -45,6 +45,28 @@
 | upstream-diff：auth | `accounts_auth.py` 等檔案的變動量 | 有變就在 HA 上確認：既有帳號照樣能登入、舊 cookie 不會被強制登出 |
 | upstream-diff：`omnigent server` option | 新增或移除的 option | 移除的 option 如果 add-on 有用，preflight 第 2 段會判定 |
 
+## Hermes plugin（runner 端釘死的 SDK）
+
+- [WOOWTECH/hermes-omnigent-plugin](https://github.com/WOOWTECH/hermes-omnigent-plugin) 會在 runner 端自己裝一份**精確釘版**的 omnigent，再用它的 adapter 與 managed host 連我們的 server。
+  - 釘的版本寫在 `hermes_omnigent/runtime.py` 的 `OMNIGENT_VERSION`，README 開頭也有。
+  - add-on 升了 server、plugin 沒跟著升，就是「舊 SDK 連新 server」。
+- plugin 每週一跑 `omnigent-canary`，結果記在它標籤為 `omnigent-compat` 的 issue。
+- TO 發布之後 canary 還沒跑到的話，就在本機跑它的 server-contract 測試。這個測試只聽 loopback、用 sqlite、不接模型：
+
+  ```bash
+  W=<暫存目錄>; PIN=<plugin 釘的版本>; TO=<目標版本>
+  git clone -q --depth 1 https://github.com/WOOWTECH/hermes-omnigent-plugin.git $W/plugin
+  uv venv -q --python 3.12 $W/sdk && uv pip install -q --python $W/sdk/bin/python omnigent==$PIN
+  uv venv -q --python 3.12 $W/srv && uv pip install -q --python $W/srv/bin/python omnigent==$TO
+  $W/sdk/bin/python $W/plugin/tests/server-contract/run.py --expect-sdk-version $PIN   # 基準：server 也是 $PIN
+  $W/sdk/bin/python $W/plugin/tests/server-contract/run.py --server-omnigent $W/srv/bin/omnigent \
+    --expect-server-version $TO --expect-sdk-version $PIN
+  ```
+
+- 每一項都是 `ok` 才算相容。
+- 它只驗配對、host 上線、重連、重啟 host、斷線，不驗模型回覆與 Hermes skill。
+- 2026-11-08 跑過：SDK 0.20.0 連 server 0.21.0，11 項全過，和基準相同。
+
 ## build（Alpine／musl）
 
 - **python 版本由 base image 的 Alpine 版本決定。**
