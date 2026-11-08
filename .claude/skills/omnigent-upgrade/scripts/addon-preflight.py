@@ -2,12 +2,14 @@
 """add-on 對 omnigent 的耦合點，在目標版本還成不成立。
 
 用法：addon-preflight.py <TO_VERSION> [--from <FROM_VERSION>] [--addon-dir <dir>] [--cache <dir>]
-  例：addon-preflight.py 0.19.1
+  例：addon-preflight.py 0.21.0
   FROM 預設讀 Dockerfile 的 ARG OMNIGENT_VERSION；addon-dir 預設是本 repo 的 omnigent/。
 
 從 PyPI 下載 FROM 與 TO 的 wheel（核對 PyPI 公布的 sha256），不安裝、不執行，
 只讀 wheel 內容，逐項比對 add-on 實際用到的東西：
-  1. Dockerfile 的 web-ui sed 補丁：每條在 TO 的 assets/*.js 命中幾次（0 次 = 失效）
+  1. HA Ingress 依賴的 web-ui：Dockerfile build 檢查的標記（`grep -R -q '<標記>'`）在 TO 的
+     assets 裡還在不在、nginx 注入點 `<head>` 在 index.html 還在不在、nginx 的版本化資產別名
+     是否等於 config.yaml 的版本；Dockerfile 若有 sed 補丁，逐條數命中次數（0 次 = 失效）
   2. svc-omnigent-server 傳給 `omnigent server` 的 flag
   3. rootfs 腳本呼叫的 HTTP API 路徑
   4. rootfs 腳本設定的 OMNIGENT_* env（FROM 有讀、TO 不讀 = 失效）
@@ -180,10 +182,44 @@ def main():
     hr(f"wheel（FROM {frm} → TO {to}）")
     zf_from, zf_to = wheel(frm, a.cache), wheel(to, a.cache)
 
-    hr("1. Dockerfile 的 web-ui sed 補丁（TO 命中 0 次 = 補丁失效；build 的檢查只要求至少一條命中，擋不住）")
+    hr("1. HA Ingress 依賴的 web-ui（細節見 references/ingress.md）")
+    nginx = (addon / "rootfs/etc/nginx/nginx.conf").read_text()
+
+    def asset_js(zf):
+        return [n for n in zf.namelist() if n.startswith(ASSETS) and n.endswith(".js")]
+
+    # Dockerfile 的 build 檢查標記：前端 bundle 必須讀這些全域變數，ingress 才會帶前綴
+    markers = re.findall(r"grep\s+-R\s+-q\s+'([^']+)'", dockerfile)
+    if not markers:
+        print("  [info] Dockerfile 沒有 `grep -R -q '<標記>'` 的 build 檢查")
+    for mk in markers:
+        n_from = sum(text(zf_from, n).count(mk) for n in asset_js(zf_from))
+        n_to = sum(text(zf_to, n).count(mk) for n in asset_js(zf_to))
+        say("OK" if n_to else "FAIL", f"build 檢查標記 {mk}：FROM {n_from} 次 / TO {n_to} 次" + ("" if n_to else "（build 會失敗）"))
+
+    # nginx 用 sub_filter 在 <head> 注入前綴；index.html 沒有字面上的 <head> 就注入不到
+    if re.search(r"sub_filter\s+'<head>'", nginx):
+        idx_to = text(zf_to, INDEX) if INDEX in zf_to.namelist() else ""
+        say("OK" if "<head>" in idx_to else "FAIL", "TO 的 index.html 有 nginx 注入點 <head>")
+
+    # 版本化資產別名（assets-vX-Y-Z）要等於 add-on 版本，否則瀏覽器可能用到舊的快取
+    cfg_ver = re.search(r"^version:\s*\"?([^\"\s]+)", (addon / "config.yaml").read_text(), re.M).group(1)
+    aliases = sorted(set(re.findall(r"assets-v(\d+-\d+-\d+)", nginx)))
+    if aliases:
+        want = cfg_ver.replace(".", "-")
+        say(
+            "OK" if aliases == [want] else "FAIL",
+            f"nginx 資產別名 assets-v{','.join(aliases)} 對 config.yaml version {cfg_ver}"
+            + ("" if aliases == [want] else f"（改 add-on 版本時要一起改成 assets-v{want}）"),
+        )
+
+    for label, zf in (("FROM", zf_from), ("TO", zf_to)):
+        app = text(zf, "omnigent/server/app.py")
+        print(f"  [info] {label} server 有 _rewrite_web_ui_index：{'有' if '_rewrite_web_ui_index' in app else '無'}（有＝送出的 HTML 是根絕對 /assets/）")
+
     pats = sed_patterns(dockerfile)
     if not pats:
-        say("OK", "Dockerfile 沒有 sed 補丁")
+        print("  [info] Dockerfile 沒有 sed 補丁")
     for i, (pat, _) in enumerate(pats, 1):
         hits = {}
         for label, zf in (("FROM", zf_from), ("TO", zf_to)):

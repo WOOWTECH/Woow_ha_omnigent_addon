@@ -12,7 +12,7 @@
   2. **升級測試**：在 mock Supervisor 下，先跑最新 Release 的 image，再用同一份 `/data` 跑 PR 的 image。`/health` 要有回應，容器要撐過 60 秒。有 hook 時一併檢查資料，見下一節。
   3. **回歸比對**：有 `smoke` hook 時，新舊版各跑一次；舊版通過、新版失敗的項目會被判為回歸。
   4. **漏洞比對**：新 image 才有、而且有修正版本的 Critical／High 漏洞會被擋下。omnigent 升版會連帶改變沒有 lock 的 pip 依賴，很容易碰到。被擋時，要在 `upgrade-notes.yaml` 的 `accepted_vulnerabilities` 宣告（`id`、`package`、`reason`），或者升級那個套件。
-- 另外兩支 workflow 是離線測試：`test-admin-password.yml`、`test-pg-wal-rescue.yml`。它們不是 required check，但失敗就要修。
+- `test-admin-password.yml` 是離線測試，不是 required check，但失敗就要修。
 
 ## 資料檢查（`omnigent/upgrade-check/`）
 
@@ -64,5 +64,5 @@ gh api repos/WOOWTECH/Woow_HA_App_Store/contents/.addon-sync/catalog.json --jq .
 
 Store 拒絕降版，不能靠發一個較小的版號回滾。使用者的路徑只有一條：還原更新前的 add-on 備份。Supervisor 還原時，會裝回備份當時的 add-on 版本。所以 CHANGELOG 要寫明「更新前先做備份」。
 
-- 0.1.18 起，備份會包含 `pg_wal`。
-- 0.1.17 以前的備份沒有 `pg_wal`：還原後要再更新到 0.1.18 以上，由 `pg-wal-rescue` 補救（見 `DOCS.md` 的 Backups 一節）。
+- 0.1.18 起，備份包含 `pg_wal`。2026-11-08 在真機 HAOS 上驗過：add-on 停止時 s6 先停 omnigent server 再停 Postgres，Postgres 是乾淨關機，部分備份還原後資料完整。
+- 0.1.17 以前的備份沒有 `pg_wal`：還原後 Postgres 會停在 `PANIC: could not locate a valid checkpoint record`，目前的版本沒有補救機制。需要時可以參考已關閉的 PR #16（`pg-wal-rescue`：乾淨關機的資料用 `pg_resetwal` 重建 WAL）。

@@ -40,6 +40,7 @@ description: omnigent 升版：把本 add-on 內建的 omnigent（Dockerfile 的
 grep -m1 '^version:' omnigent/config.yaml               # add-on 版本
 grep -m1 '^ARG OMNIGENT_VERSION=' omnigent/Dockerfile   # omnigent 版本，也就是 FROM
 gh release list -R WOOWTECH/Woow_ha_omnigent_addon --limit 3
+gh pr list -R WOOWTECH/Woow_ha_omnigent_addon --state all --limit 8   # 有沒有其他工作線正在改同一件事
 ls omnigent/upgrade-check 2>/dev/null                   # 有沒有資料檢查 hook
 curl -s https://pypi.org/pypi/omnigent/json | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])'
 ```
@@ -56,7 +57,7 @@ $S/upstream-diff.sh v<FROM> v<TO> <上游 clone>     # 上游這段期間的變�
 
 判讀見 `references/upstream-diff.md`。照判讀結果整理成下面的「本次決定」，交給使用者確認後再往下走：
 
-1. **ingress 補丁**：preflight 第 1 段每條補丁命中幾次？命中 0 次就是失效；失效後會不會壞，看 `references/ingress.md` 的「影響」欄。⇒ 決定怎麼重做。
+1. **ingress**：preflight 第 1 段有沒有 FAIL？前端 bundle 還讀不讀 `__OMNIGENT_BASE_PATH__`、index.html 還有沒有 `<head>`？upstream-diff 的「web-ui 子路徑」段有沒有變動？⇒ 決定 nginx 注入要不要改，見 `references/ingress.md`。
 2. **migration**：新增了哪些 revision？有沒有改資料（`UPDATE`／`DELETE`）？⇒ 決定 CHANGELOG 怎麼寫回滾、`upgrade-check` 要驗哪些資料。
 3. **feature flag**：`config.yaml` 預設的清單是否還都認得？新版預設開啟哪些？⇒ 決定 options 預設值與註解要不要改。
 4. **CLI／API／env**：preflight 第 2–4 段有沒有 FAIL？⇒ 決定 s6 腳本要不要改。
@@ -66,10 +67,8 @@ $S/upstream-diff.sh v<FROM> v<TO> <上游 clone>     # 上游這段期間的變�
 
 ### H2 改版 PR
 
-- **版本字串**：用 `git grep -nF '<FROM>'` 找出所有寫死 omnigent 版本的地方，逐一判斷要不要改。範圍包括 Dockerfile 的 ARG、註解、LABEL，`config.yaml` 的 description 與 feature 註解，`README.md`，`DOCS.md` 裡給 runner 的安裝版本，以及 `init-addon-config` 的註解。add-on 的 `version` 升一版。
-- **ingress 補丁**：照「本次決定」重做，見 `references/ingress.md`。改完要達到兩件事：
-  - preflight 第 1 段全部綠燈。
-  - Dockerfile 的 build 檢查改成逐條確認命中，任何一條沒命中就讓 build 失敗。
+- **版本字串**：用 `git grep -nF '<FROM>'` 找出所有寫死 omnigent 版本的地方，逐一判斷要不要改。範圍包括 Dockerfile 的 ARG、註解、LABEL，`config.yaml` 的 description 與 feature 註解，`README.md`，`DOCS.md` 裡給 runner 的安裝版本，以及 `init-addon-config` 的註解。add-on 的 `version` 升一版，**`nginx.conf` 裡的 `assets-vX-Y-Z` 也要跟著改**（preflight 第 1 段會檢查）。
+- **ingress**：照「本次決定」調整 nginx 注入，見 `references/ingress.md`。改完 preflight 第 1 段要全部綠燈。
 - **資料檢查 hook**：在 `omnigent/upgrade-check/` 補上或更新 `seed`／`verify`，見 `references/release.md` 的「資料檢查」。
 - **CHANGELOG**（英文）：寫明 omnigent 的新版本、使用者看得到的變化，以及三件事：更新前先做備份、不能降版、回滾就是還原備份。
 - **`upgrade-notes.yaml`**：升版比對的報告要求時才建立，`change`、`key` 照報告複製。

@@ -28,7 +28,7 @@
 
 | 段落 | 看什麼 | 怎麼影響後面 |
 |---|---|---|
-| preflight 1：sed 補丁 | 每條在 TO 的 `assets/*.js` 命中幾次 | 0 次＝補丁失效。build 照樣會綠燈，因為 Dockerfile 的檢查只要求至少一條命中。重做方式見 `ingress.md` |
+| preflight 1：ingress 依賴 | build 檢查標記 `__OMNIGENT_BASE_PATH__` 在 TO 的 bundle 還在不在；index.html 有沒有 `<head>`；nginx 的 `assets-vX-Y-Z` 是否等於 add-on 版本；若有 sed 補丁，逐條命中次數 | 任一項 FAIL，ingress 就會壞，或延遲載入的頁面拿到舊快取。細節與修法見 `ingress.md` |
 | preflight 1：index.html | wheel 裡的靜態 index.html，資產路徑是絕對（`/assets/`）還是相對（`./assets/`），有沒有 `<base href>` | 0.15 起靜態檔改成相對路徑，但 server 啟動時的 `_rewrite_web_ui_index` 會改回根絕對的 `/assets/…`，並移除 `<base>`。所以 nginx 實際收到的 HTML 仍是根絕對，HTML 的 `sub_filter` 規則仍在作用。JS 內部字串改用相對路徑，針對 JS 的 `sub_filter` 規則因此不再作用，但沒有害處 |
 | preflight 2：CLI flag | `svc-omnigent-server` 傳的 flag 在 TO 還在不在 | 不在的話，server 起不來 |
 | preflight 3：HTTP API | `init-admin-claim` 用的 `/health`、`/v1/info`、`/auth/setup` | 不在的話，自動建立 admin 會失敗 |
@@ -50,8 +50,8 @@
 - **python 版本由 base image 的 Alpine 版本決定。**
   - base image 本身不含 Python，是 Dockerfile 自己 `apk add python3`。
   - `ghcr.io/hassio-addons/base/{arch}:20.2.0` 是 Alpine 3.23，裝到的是 Python 3.12.16。
-  - Dockerfile 裡寫死了 `/usr/lib/python3.12/site-packages`：sed 的 `find` 路徑和 build 檢查都用到它。
-  - base 換成 Python 3.13 以上的版本時，這兩處要一起改。base 升級和 omnigent 升級分開做。
+  - Dockerfile 的 build 檢查（`grep -R -q '__OMNIGENT_BASE_PATH__' …`）寫死了 `/usr/lib/python3.12/site-packages`。
+  - base 換成 Python 3.13 以上的版本時，這個路徑要一起改。base 升級和 omnigent 升級分開做。
 - **pip 只釘 omnigent 本身，其他依賴沒有 lock。**
   - 實際裝進去的版本可能和上游 `uv.lock` 不同。例：0.1.17 裝的是 SQLAlchemy 2.1.8，上游鎖的是 2.0.50。
   - PR 的 image 與 merge 後發布的 image，也可能裝到不同版本。

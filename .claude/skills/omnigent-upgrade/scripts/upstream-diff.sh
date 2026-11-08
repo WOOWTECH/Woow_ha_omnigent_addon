@@ -3,7 +3,7 @@
 # 只讀上游 clone（會 fetch tags，NO_FETCH=1 可略過），不動工作樹。
 #
 # 用法：upstream-diff.sh <FROM_TAG> <TO_TAG> <UPSTREAM_DIR>
-#   例：upstream-diff.sh v0.12.0 v0.19.1 ~/src/omnigent
+#   例：upstream-diff.sh v0.20.0 v0.21.0 ~/src/omnigent
 #
 # UPSTREAM_DIR 是 https://github.com/omnigent-ai/omnigent 的 clone。沒有就建一個不 checkout 的：
 #   git clone --no-checkout --filter=blob:none https://github.com/omnigent-ai/omnigent.git <dir>
@@ -12,7 +12,7 @@
 # minor release 各在自己的 release/vX.Y.0 分支上，不互為祖孫（patch release 接在同一條分支）
 # ⇒ 一律比兩個 tag 的 tree（git diff FROM TO），不用 FROM..TO 的 log。
 #
-# add-on 實際用到的耦合點（sed 補丁、CLI flag、API、env、feature）由 addon-preflight.py 判定；
+# add-on 實際用到的耦合點（ingress 依賴、CLI flag、API、env、feature）由 addon-preflight.py 判定；
 # 本腳本列出上游這段期間的變動，供「本次決定」判讀。
 set -euo pipefail
 
@@ -110,7 +110,7 @@ git diff --stat "$FROM" "$TO" -- omnigent/server/routes/host_tunnel.py omnigent/
   omnigent/host/connect.py omnigent/host/frames.py | cat
 echo "新增的 tunnel 相關檔案：$(git diff --name-status "$FROM" "$TO" -- omnigent/server omnigent/host | awk '$1=="A" && /tunnel|handshake/ {print $2}' | tr '\n' ' ')"
 
-hr "web-ui 子路徑與登入導向（ingress 補丁依賴這些；有變就重跑 addon-preflight.py 並在 HA 上驗登入）"
+hr "web-ui 子路徑與登入導向（ingress 依賴這些；有變就重跑 addon-preflight.py 並在 HA 上驗登入）"
 git diff --stat "$FROM" "$TO" -- web/src/lib/basePath.ts web/src/lib/identity.ts web/src/main.tsx \
   web/vite.config.ts web/index.html | cat
 echo "server 端 index 改寫與 base path（app.py 的相關函式在 TO 是否存在）："
