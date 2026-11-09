@@ -15,12 +15,12 @@ omnigent host --server http://homeassistant.local:8000
 
 1. **Image size.** pi + claude + codex + node runtimes push the image past
    1 GB. HA add-on stores prefer <400 MB.
-2. **State conflicts.** The Podman + k3s deployments both hit "pi extension
+2. **State conflicts.** Earlier self-hosted deployments hit "pi extension
    conflict" bugs where seeded plugins register duplicate MCP tool names.
    Externalising the runner lets each host manage its own `~/.pi-agent/`.
-3. **Multi-source reality.** The user already runs runners in multiple
-   places (Podman on `.197`, k3s pi1/pi4/pi5, laptop, `woow_ha_pi_agent`
-   add-on). The add-on is one more hub, not the only one.
+3. **Multi-source reality.** Users already run runners in multiple
+   places (other servers, laptops, the `woow_ha_pi_agent` add-on). The
+   add-on is one more hub, not the only one.
 
 ### Trade-off accepted
 
@@ -69,7 +69,7 @@ selector (`<head>`) changes.
 - Officially available "PostgreSQL add-on" (via the addon store) is not a
   first-party HA add-on; adding a dependency on a community add-on
   creates install friction.
-- Bundling in-image matches how the k3s chart works (StatefulSet Postgres
+- Bundling in-image matches the other Omnigent deployments (Postgres runs
   next to the server).
 - Data lives at `/data/postgres`, persisted across restarts, included in
   add-on backups.
