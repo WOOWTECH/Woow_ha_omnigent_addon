@@ -102,7 +102,7 @@ Two coordinated fixes:
 ## 0.1.14 — 2026-09-06
 
 🎉 **HA Ingress panel now 100% functional.** Full feature parity with
-the k3s reference deployment (`omnigent.woowtech.io`) achieved through
+a standalone Omnigent deployment, achieved through
 the HA sidebar `Woow Omnigent` panel — no LAN / CF tunnel needed for
 end users.
 
@@ -330,4 +330,4 @@ Concrete changes shipped in this release:
 - `env_vars` schema field for arbitrary passthrough (e.g. API keys).
 - **Not bundled:** pi / claude / codex CLI, omnigent runner — external
   hosts register themselves. Rationale: keeps the addon image <400 MB
-  and matches how the k3s deployment already works.
+  and matches how other Omnigent deployments already work.

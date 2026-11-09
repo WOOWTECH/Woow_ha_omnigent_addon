@@ -136,8 +136,7 @@ option is checked against its existing database before the server starts.
 
 **Runner registers but chat hangs** — pi extension conflict. Wipe the
 runner's `~/.pi-agent/plugins/` and remove `openai-codex` from
-`~/.pi-agent/auth.json`, then reconnect. See the upstream 0.12.0 notes in
-the k3s addon's `docs/plans/`.
+`~/.pi-agent/auth.json`, then reconnect.
 
 ## Uninstall
 
