@@ -55,6 +55,7 @@
 ```bash
 V=<add-on 版本>
 gh release view v$V -R WOOWTECH/Woow_ha_omnigent_addon --json tagName,publishedAt
+gh release view v$V -R WOOWTECH/Woow_ha_omnigent_addon --json body --jq .body | grep -c '勿代'   # 要是 0
 for a in amd64 aarch64; do
   T=$(curl -s "https://ghcr.io/token?scope=repository:woowtech/woow-ha-omnigent-$a:pull" | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
   curl -s -o /dev/null -w "$a %{http_code}\n" -H "Authorization: Bearer $T" \
@@ -66,6 +67,7 @@ gh api repos/WOOWTECH/Woow_HA_App_Store/contents/.addon-sync/catalog.json --jq .
 ```
 
 - Release 存在，兩個 arch 都回 200，catalog 的版本等於 `$V`，才算發布完成。
+- Release notes 出現標題前綴時：agent 把那些 PR 的標題改回 `<type>: <說明>`，再請使用者手動修改 Release 說明。改 PR 標題不會更新已產生的 Release notes，而 Release 留給人改。
 - catalog 慢於 Release 是正常的：Store 的排程同步可能延遲數小時。
 - 超過一天還沒同步，就看 `woow-addon-sync.yml` 最近一次 run 的結果。
 
