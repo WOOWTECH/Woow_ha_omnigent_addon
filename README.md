@@ -43,7 +43,6 @@ See `omnigent/DOCS.md` for the operator docs.
 ## Sibling repos
 
 - [`Woow_podman_omnigent_package`](https://github.com/WOOWTECH/Woow_podman_omnigent_package) — Podman-compose deployment
-- [`Woow_k3s_omnigent_package`](https://github.com/WOOWTECH/Woow_k3s_omnigent_package) — Helm chart for k3s
 
 ## License
 
