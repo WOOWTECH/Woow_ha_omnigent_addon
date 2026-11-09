@@ -28,7 +28,9 @@
 - **注入了 `<base href>`**：上游刻意移除 `<base>`，因為它會讓 SVG 的 `url(#id)` 與頁內錨點解析到錯的位置。目前沒有看到功能問題，但升版時要留意圖示或錨點的顯示。
 - **JS 內的 `"/assets/` 改寫**：0.15 起 JS 改用相對路徑的 import，這幾條 `sub_filter` 多半不再命中，留著也無害。
 - **server 自己發出的導向**（magic link、OAuth callback、登出）不知道前綴，要在 HA 上實測。
-- **真機驗證紀錄**：2026-11-08 在 HAOS 18.3 上裝 0.1.19（omnigent 0.20.0），從側欄經 ingress 開啟並登入、LAN 直連 8000 都正常（見 PR #19 的留言）。
+- **真機驗證紀錄**：
+  - 2026-11-08 在 HAOS 18.3 上裝 0.1.19（omnigent 0.20.0），從側欄經 ingress 開啟並登入、LAN 直連 8000 都正常（見 PR #19 的留言）。
+  - 2026-11-08 在 HAOS 18.1 上從 0.1.19 升到 0.1.20（omnigent 0.21.0）：ingress 內登入與登出、session 過期後導回 ingress 登入頁再回原頁、Settings 深層連結、`v1/sessions/updates` 的 WebSocket 都正常；圖示顯示正常（見 PR #20 的留言）。
 
 ## 0.1.17 以前的做法（已移除）
 

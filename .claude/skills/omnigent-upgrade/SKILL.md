@@ -17,7 +17,7 @@ description: omnigent 升版：把本 add-on 內建的 omnigent（Dockerfile 的
   - agent 的工作到「開 PR、等 required checks 全綠、回報結果」為止。
   - PR 標題開頭加 `⛔ 勿代 merge｜待 Eugene 覆核 — `。
   - gh 登入的帳號可能有 admin 權限，技術上做得到下面這些事，但一律留給人：merge、改 ruleset、dispatch workflow、手動發 Release、刪除 Release 或 GHCR tag。
-- **本 repo 是 PUBLIC。** commit、PR、檔案只寫公開資訊。
+- **本 repo 是 PUBLIC。** commit、PR、檔案只寫公開資訊。測試環境的平台細節（虛擬化與容器平台、叢集或主機名稱、映像來源、內部網址）也不寫，會暴露攻擊面。
 - **語言**：commit message 與 PR 描述用繁體中文（`fix: …`、`feat: …`）。`CHANGELOG.md`、`DOCS.md` 是給使用者看的文件，沿用英文。
 - **在 sibling worktree 工作**（`git worktree add ../wt-<名稱> -b <type>/<名稱> origin/main`），主要 checkout 保持乾淨。
 - **開工先讀 Store 規則。** 升版比對、升級測試、`upgrade-notes.yaml` 的規則寫在 [Woow_HA_App_Store](https://github.com/WOOWTECH/Woow_HA_App_Store) 的 README。reusable workflow 跟著 `@main` 走，常常改。每次開工先讀最新版的「升版比對與 `upgrade-notes.yaml`」一節，包括其中的「第 2 類 升級測試」與「資料檢查（#138）」。
