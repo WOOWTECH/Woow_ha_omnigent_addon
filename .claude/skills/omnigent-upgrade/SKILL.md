@@ -15,8 +15,10 @@ description: omnigent 升版：把本 add-on 內建的 omnigent（Dockerfile 的
 
 - **merge 由覆核者（Eugene）執行。**
   - agent 的工作到「開 PR、等 required checks 全綠、回報結果」為止。
-  - PR 標題開頭加 `⛔ 勿代 merge｜待 Eugene 覆核 — `。
+  - PR 開著的時候，標題開頭加 `⛔ 勿代 merge｜待 Eugene 覆核 — `。Release notes 是 GitHub 用 PR 標題產生的，所以 merge 前標題要改回 `<type>: <說明>`，squash 的 commit 標題寫成 `<type>: <說明>（#<PR 編號>）`。
+  - 改 PR 標題或描述用 `gh api -X PATCH repos/WOOWTECH/Woow_ha_omnigent_addon/pulls/<n> -f title=…`（描述用 `-F body=@<檔案>`）。這個 repo 的 `gh pr edit` 會因 Projects classic 的 GraphQL 錯誤失敗。
   - gh 登入的帳號可能有 admin 權限，技術上做得到下面這些事，但一律留給人：merge、改 ruleset、dispatch workflow、手動發 Release、刪除 Release 或 GHCR tag。
+  - 唯一的例外：使用者在對話中明確授權 merge 指名的 PR，授權只限那幾張。做法是確認 required checks 全綠、`mergeable_state` 是 `clean`，先改好標題，再 `gh pr merge <n> --squash --match-head-commit <驗過的 sha> --subject "<type>: <說明>（#<n>）"`。
 - **本 repo 是 PUBLIC。** commit、PR、檔案只寫公開資訊。測試環境的平台細節（虛擬化與容器平台、叢集或主機名稱、映像來源、內部網址）也不寫，會暴露攻擊面。
 - **語言**：commit message 與 PR 描述用繁體中文（`fix: …`、`feat: …`）。`CHANGELOG.md`、`DOCS.md` 是給使用者看的文件，沿用英文。
 - **在 sibling worktree 工作**（`git worktree add ../wt-<名稱> -b <type>/<名稱> origin/main`），主要 checkout 保持乾淨。
@@ -30,8 +32,8 @@ description: omnigent 升版：把本 add-on 內建的 omnigent（Dockerfile 的
 | H1 | 上游差異分析，整理「本次決定」 | 使用者確認「本次決定」 |
 | H2 | 改版 PR | PR 開出，`addon-preflight.py` 綠燈 |
 | H3 | CI 與 HA 實機驗收 | required checks 全綠，`references/ha-acceptance.md` 的清單逐項通過 |
-| H4 | merge | 覆核者 merge |
-| H5 | 發布驗證 | Release、兩個 arch 的 GHCR tag、Store catalog 都是新版本 |
+| H4 | merge | PR 已 merge，標題已改回 `<type>: <說明>` |
+| H5 | 發布驗證 | Release、兩個 arch 的 GHCR tag、Store catalog 都是新版本，Release notes 沒有標題前綴 |
 | H6 | 收尾 | 實際做法和本 skill 不一致的地方，已改回本 skill |
 
 ### H0 盤點
@@ -83,11 +85,11 @@ $S/upstream-diff.sh v<FROM> v<TO> <上游 clone>     # 上游這段期間的變�
 
 ### H4 merge
 
-由覆核者 merge。agent 回報 PR 連結、checks 結果、HA 驗收結果，然後停下。
+由覆核者 merge。agent 回報 PR 連結、checks 結果、HA 驗收結果，並提醒覆核者 merge 前把標題前綴拿掉（見「邊界」），然後停下。
 
 ### H5 發布驗證
 
-照 `references/release.md` 的「發布之後」確認：Release、兩個 arch 的 GHCR tag、Store 的 catalog 都已經是新版本。
+照 `references/release.md` 的「發布之後」確認：Release、兩個 arch 的 GHCR tag、Store 的 catalog 都已經是新版本，Release notes 沒有標題前綴。
 
 ### H6 收尾
 
