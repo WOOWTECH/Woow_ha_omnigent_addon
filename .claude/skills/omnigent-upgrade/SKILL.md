@@ -80,7 +80,7 @@ $S/upstream-diff.sh v<FROM> v<TO> <上游 clone>     # 上游這段期間的變�
 
 - **required checks**：名稱以 branch rules 為準，用下面的指令查：`gh api repos/WOOWTECH/Woow_ha_omnigent_addon/rules/branches/main --jq '.[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context'`。
   - 一輪約 7 分鐘，排隊時會超過 15 分鐘。
-  - 要重跑一律用「Re-run all jobs」，原因見 `AGENTS.md`。
+  - 重跑用「Re-run failed jobs」即可：沒重跑的 job，其 artifact 從它實際執行的那次 attempt 讀（pipeline #131），見 `AGENTS.md`。
 - **CI 驗不到的部分**：CI 只驗 amd64 能不能啟動；有 `verify` hook 時才會一起驗資料。ingress 的登入導向、aarch64 的執行期、備份還原，都要在 HA 上照 `references/ha-acceptance.md` 驗。
 
 ### H4 merge
