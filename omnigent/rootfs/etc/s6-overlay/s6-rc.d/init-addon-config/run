@@ -140,6 +140,10 @@ set_env OMNIGENT_AUTH_ENABLED "1"
 set_env ARTIFACT_DIR "/data/artifacts"
 set_env OMNIGENT_ADMIN_CREDENTIALS_PATH "/data/admin-credentials"
 set_env HOME "/data/omnigent-home"
+# Login grants (runners, `omnigent login`) stop refreshing this many days after
+# approval. 365 is the WOOW PaaS value (Omnigent's default is 30); an env_vars
+# entry below still overrides it.
+set_env OMNIGENT_GRANT_MAX_LIFETIME_DAYS "365"
 mkdir -p /data/omnigent-home /data/artifacts
 
 # --- Optional extra env vars (arbitrary user passthrough) ------------------

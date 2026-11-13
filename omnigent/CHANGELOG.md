@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.22
+
+- Login grants now last 365 days, the value the WOOW PaaS server uses.
+  Omnigent's default is 30. A runner or `omnigent login` has to sign in again
+  a year after its grant was approved instead of a month. The limit is
+  checked against each grant's approval time, so it also covers grants issued
+  before this update.
+- To use a different number of days, add `OMNIGENT_GRANT_MAX_LIFETIME_DAYS`
+  to `env_vars` (for example `30` for the previous behavior).
+- No database migration.
+
 ## 0.1.21
 
 - A new install no longer needs `admin_password` before the first start. If
