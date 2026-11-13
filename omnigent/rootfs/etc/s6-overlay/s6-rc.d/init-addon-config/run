@@ -6,7 +6,11 @@
 # bashio talks to the Supervisor API and the token isn't reliably wired
 # into the env when running as an s6 oneshot on this base image
 # (`Unable to access the API, forbidden`). The Supervisor writes the same
-# options.json to disk at boot, so we bypass the API entirely.
+# options.json to disk at boot, so we read the options from that file.
+# The one exception is a fresh install with no admin_password: the
+# generated password is written back through POST /addons/self/options
+# (with SUPERVISOR_TOKEN from the env or the s6 env dir), and a failed
+# save is fatal.
 set -e
 umask 077
 
