@@ -144,6 +144,11 @@ set_env HOME "/data/omnigent-home"
 # approval. 365 is the WOOW PaaS value (Omnigent's default is 30); an env_vars
 # entry below still overrides it.
 set_env OMNIGENT_GRANT_MAX_LIFETIME_DAYS "365"
+# Public access (anyone who can sign in may open a session from its link) starts
+# off, as on the WOOW PaaS server. An admin can turn it on in Settings → Sharing,
+# which is kept in /data and wins over this default; an env_vars entry below can
+# change the default too.
+set_env OMNIGENT_PUBLIC_SHARING "0"
 mkdir -p /data/omnigent-home /data/artifacts
 
 # --- Optional extra env vars (arbitrary user passthrough) ------------------
