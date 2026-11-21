@@ -1,6 +1,10 @@
 # H3：HA 實機驗收
 
-CI 只驗 amd64 版能不能啟動。下面這些要在一台真的 HAOS 上驗；能找到 aarch64 的機器，就兩個 arch 都驗。
+既有 Upgrade comparison 透過 mock Supervisor 驗 amd64 啟動與資料 hooks。
+新增的 `HAOS acceptance (amd64)` PR job 使用全新 HAOS guest 與真正 Supervisor，
+流程、產物綁定與涵蓋範圍見 [HAOS CI 說明](../../../../omnigent/tests/haos/README.md)。
+必須取得該 PR head 的完整成功 receipt，才能把對應項目記為通過；harness unit tests
+不算實機結果。以下清單仍適用；aarch64、外網 Pi 與文件列出的缺項另補實證。
 
 ## 測試機
 

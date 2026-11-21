@@ -87,7 +87,7 @@ $S/upstream-diff.sh v<FROM> v<TO> <上游 clone>     # 上游這段期間的變�
 - **required checks**：名稱以 branch rules 為準，用下面的指令查：`gh api repos/WOOWTECH/Woow_ha_omnigent_addon/rules/branches/main --jq '.[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context'`。
   - 一輪約 7 分鐘，排隊時會超過 15 分鐘。
   - 重跑用「Re-run failed jobs」即可：沒重跑的 job，其 artifact 從它實際執行的那次 attempt 讀（pipeline #131），見 `AGENTS.md`。
-- **CI 驗不到的部分**：CI 只驗 amd64 能不能啟動；有 `verify` hook 時才會一起驗資料。ingress 的登入導向、aarch64 的執行期、備份還原，都要在 HA 上照 `references/ha-acceptance.md` 驗。
+- **CI 與實機證據**：Upgrade comparison 的 mock Supervisor 驗 amd64 啟動與資料 hooks；`HAOS acceptance (amd64)` 用全新 HAOS guest 驗真正 Supervisor、Ingress、localhost TLS MCP、備份還原與 cold boot。取得對應 PR head 的成功 receipt 才算通過。aarch64、外網 Pi 與其餘未涵蓋項目，照 `references/ha-acceptance.md` 另補實證。
 
 ### H4 merge
 

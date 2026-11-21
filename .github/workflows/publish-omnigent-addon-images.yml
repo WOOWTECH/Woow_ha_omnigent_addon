@@ -157,6 +157,26 @@ jobs:
           component: woow-omnigent
           image: ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
 
+      # The default PR checkout is a synthetic merge. Record its actual add-on
+      # tree so HAOS acceptance can compare it with the explicit PR-head tree.
+      - name: Bind the PR image to the producer source
+        if: github.event_name == 'pull_request' && matrix.arch == 'amd64'
+        env:
+          HAOS_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          python3 omnigent/tests/haos/provenance.py --image "${IMAGE}:${VERSION}" \
+            --output "${RUNNER_TEMP}/producer-source.json"
+
+      - name: Save the PR image source receipt
+        if: github.event_name == 'pull_request' && matrix.arch == 'amd64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: haos-image-source-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/producer-source.json
+          retention-days: 7
+          if-no-files-found: error
+
   # Upgrade comparison (pipeline #89): rules and caller contract are in the Store
   # workflow header and Store README "升版比對與 `upgrade-notes.yaml`". The PR build
   # starts from main's gha cache when one exists (entries unused for 7 days are
