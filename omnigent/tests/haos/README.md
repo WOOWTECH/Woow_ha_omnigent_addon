@@ -95,6 +95,15 @@ artifact/image/source identities, physical resource counts, Supervisor version,
 database version and migration head. Failures contain a stage, exception type and
 source line, without exception text. Passwords, keys, token URLs, backups, browser
 traces, screenshots and raw command/guest logs remain private temporary files.
+Boot diagnostics distinguish QEMU process exit, guest SSH wait and Supervisor
+wait. The receipt includes process exit codes, attempt counts and allowlisted
+error/console marker labels. During Supervisor readiness, both `/supervisor/info`
+and `/info` retain separate HTTP statuses, curl/SSH exit codes and timeout flags.
+The guest probe records Docker/curl/jq availability, container inspection,
+token lookup, network count and address lookup exit codes, plus health and an
+allowlisted system state. These diagnostics are captured before cleanup; raw
+commands, response bodies, IP addresses, tokens and QEMU/SSH output stay private.
+An exited QEMU process fails immediately instead of consuming the SSH timeout.
 Cleanup terminates the harness's processes and verifies the registry ownership
 label before deleting it and its anonymous volume. Job teardown removes the
 ephemeral runner and remaining Docker images.

@@ -144,6 +144,70 @@ class BindingTests(unittest.TestCase):
 
 
 class HostTests(unittest.TestCase):
+    def test_exited_qemu_fails_immediately_instead_of_waiting_for_ssh(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.disk_guard = Mock()
+            h.start = Mock(return_value=Mock(poll=Mock(return_value=1)))
+            h.ssh = Mock()
+            # One predicate call is enough to detect a dead QEMU process.
+            def check_once(check, *args):
+                result = check()
+                self.assertTrue(result, "dead QEMU was treated as retryable SSH readiness")
+                return result
+            with patch("haos.host.wait_for", side_effect=check_once), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(host.BootFailure, "QEMU exited before guest readiness"):
+                    h.boot()
+            h.ssh.assert_not_called()
+            self.assertEqual(h.boot_progress["qemu_exit"], 1)
+
+    def test_terminal_boot_failure_is_not_swallowed_by_wait_for(self):
+        check = Mock(side_effect=host.BootFailure("QEMU exited before guest readiness"))
+        with patch("haos.host.time.sleep") as sleep, self.assertRaises(host.BootFailure):
+            host.wait_for(check, 600, "fresh HAOS developer SSH")
+        sleep.assert_not_called()
+        check.assert_called_once()
+
+    def test_boot_diagnostics_export_labels_not_raw_log_content(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.qemu = Mock(poll=Mock(return_value=1))
+            secret = "private_omcp_SYNTHETIC_SECRET https://example.invalid/?token=secret"
+            (Path(d) / "qemu.log").write_text("Block node is read-only\n" + secret)
+            (Path(d) / "console.log").write_text("Linux version fixture\nUpdate SSH authorized_keys!\n" + secret)
+            h._capture_boot_signals()
+            self.assertEqual(h.boot_progress, {
+                "qemu_exit": 1, "qemu_error_codes": ["readonly_block"],
+                "console_markers": ["linux_started", "ssh_key_imported"]})
+            self.assertNotIn(secret, json.dumps(h.boot_progress))
+
+    def test_boot_ssh_diagnostics_export_error_class_only(self):
+        for error, expected in (
+            (b"Permission denied (publickey). private_omcp_SYNTHETIC", "authentication_denied"),
+            (b"Connection refused private_omcp_SYNTHETIC", "connection_refused"),
+            (b"unknown private_omcp_SYNTHETIC", "unclassified"),
+        ):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                h.qemu = Mock(poll=Mock(return_value=None))
+                h.boot_progress["ssh_attempts"] = 0
+                h.ssh = Mock(return_value=SimpleNamespace(returncode=255, stderr=error))
+                self.assertFalse(h._ssh_ready())
+                self.assertEqual(h.boot_progress["last_ssh_error"], expected)
+                self.assertEqual(h.boot_progress["ssh_attempts"], 1)
+                self.assertNotIn("SYNTHETIC", json.dumps(h.boot_progress))
+
+    def test_boot_ssh_timeout_is_bounded_and_recorded(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.qemu = Mock(poll=Mock(return_value=None))
+            h.boot_progress["ssh_attempts"] = 0
+            h.boot_progress["last_ssh_exit"] = 255
+            h.ssh = Mock(side_effect=host.subprocess.TimeoutExpired("private command", 10))
+            self.assertFalse(h._ssh_ready())
+            self.assertEqual(h.boot_progress["last_ssh_error"], "command_timeout")
+            self.assertIsNone(h.boot_progress["last_ssh_exit"])
+
     def boot_fixture(self, supervisor_info, root_info):
         """Use the real response envelopes, parser and readiness predicate."""
         with tempfile.TemporaryDirectory() as d:
@@ -155,9 +219,10 @@ class HostTests(unittest.TestCase):
                 if command == "true":
                     return SimpleNamespace(returncode=0)
                 for path, data in (("/supervisor/info", supervisor_info), ("/info", root_info)):
-                    if command.endswith('"http://$address' + path + '"'):
+                    if '"http://$address' + path + '"' in command:
                         visited.append(path)
-                        return SimpleNamespace(stdout=json.dumps({"result": "ok", "data": data}).encode())
+                        return SimpleNamespace(returncode=0, stderr=b"HAOS_BOOT curl_exit 0\n",
+                                               stdout=json.dumps({"result": "ok", "data": data}).encode() + b"\n200\n")
                 self.fail("unexpected guest command")
             h.ssh = Mock(side_effect=ssh)
             def check_once(check, seconds, description, interval=3):
@@ -165,7 +230,7 @@ class HostTests(unittest.TestCase):
                 if not result:
                     raise RuntimeError("not ready")
                 return result
-            with patch("haos.host.wait_for", side_effect=check_once):
+            with patch("haos.host.wait_for", side_effect=check_once), contextlib.redirect_stdout(io.StringIO()):
                 receipt = h.boot()
             self.assertEqual(visited, ["/supervisor/info", "/info"])
             return receipt
@@ -189,6 +254,132 @@ class HostTests(unittest.TestCase):
         for root_info in ({"state": "startup"}, {"state": None}, {}):
             with self.subTest(root_info=root_info), self.assertRaisesRegex(RuntimeError, "not ready"):
                 self.boot_fixture({"healthy": True, "addons": [{"state": "started"}]}, root_info)
+
+    def supervisor_probe_fixture(self, *, missing=None, token=True, address=True,
+                                 inspect_exit=0, status=200, curl_exit=0, timeout=False):
+        """Execute the actual POSIX probe with real jq and controlled commands."""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            tools = root / "bin"
+            tools.mkdir()
+            jq = host.shutil.which("jq")
+            self.assertIsNotNone(jq, "jq is required for the real shell regression")
+            if missing != "jq":
+                (tools / "jq").symlink_to(jq)
+            cli = [{"Config": {"Env": ["SUPERVISOR_TOKEN=SYNTHETIC_PRIVATE"] if token else []}}]
+            supervisor = [{"NetworkSettings": {"Networks": {
+                "fixture_network": {"IPAddress": "192.0.2.123" if address else ""}}}}]
+            docker = tools / "docker"
+            docker.write_text("#!/bin/sh\n" + (
+                f"exit {inspect_exit}\n" if inspect_exit else
+                "case \"$2\" in\nhassio_cli) printf '%s' '" + json.dumps(cli) + "';;\n"
+                "hassio_supervisor) printf '%s' '" + json.dumps(supervisor) + "';;\nesac\n"))
+            docker.chmod(0o700)
+            if missing != "curl":
+                curl = tools / "curl"
+                curl.write_text("#!/bin/sh\nprintf '%s\\n' "
+                                "'{\"result\":\"ok\",\"data\":{\"healthy\":true,\"private\":\"SYNTHETIC_PRIVATE\"}}' "
+                                f"'{status}'\nprintf '%s\\n' 'SYNTHETIC_PRIVATE 192.0.2.123' >&2\nexit {curl_exit}\n")
+                curl.chmod(0o700)
+            h = host.Host(root)
+            def ssh(command, **kwargs):
+                self.assertFalse(kwargs["check"])
+                self.assertEqual(kwargs["timeout"], 30)
+                result = host.subprocess.run(["/bin/sh", "-c", command], capture_output=True,
+                                             env={"PATH": str(tools)}, timeout=5)
+                if timeout:
+                    raise host.subprocess.TimeoutExpired("private command", 30,
+                                                         output=result.stdout, stderr=result.stderr)
+                return result
+            h.ssh = ssh
+            result = h._supervisor_boot_info("supervisor_info")
+            self.assertNotIn("SYNTHETIC_PRIVATE", json.dumps(h.boot_progress))
+            self.assertNotIn("192.0.2.123", json.dumps(h.boot_progress))
+            return result, h.boot_progress["supervisor_info"]
+
+    def test_supervisor_probe_records_successful_command_families(self):
+        result, progress = self.supervisor_probe_fixture()
+        self.assertTrue(result["healthy"])
+        for name in ("docker_available_exit", "curl_available_exit", "jq_available_exit",
+                     "cli_inspect_exit", "token_lookup_exit", "supervisor_inspect_exit",
+                     "network_lookup_exit", "address_lookup_exit", "curl_exit", "ssh_exit"):
+            self.assertEqual(progress[name], 0, name)
+        self.assertEqual(progress["network_count"], 1)
+        self.assertEqual(progress["http_status"], 200)
+        self.assertTrue(progress["api_ok"])
+
+    def test_supervisor_probe_records_missing_guest_tools(self):
+        for tool in ("curl", "jq"):
+            with self.subTest(tool=tool):
+                result, progress = self.supervisor_probe_fixture(missing=tool)
+                self.assertEqual(result, {})
+                self.assertNotEqual(progress[tool + "_available_exit"], 0)
+                self.assertEqual(progress["ssh_exit"], 127)
+                self.assertIsNone(progress["http_status"])
+
+    def test_supervisor_probe_records_inspect_and_lookup_failures(self):
+        for options, field in (({"inspect_exit": 1}, "cli_inspect_exit"),
+                               ({"token": False}, "token_lookup_exit"),
+                               ({"address": False}, "address_lookup_exit")):
+            with self.subTest(field=field):
+                result, progress = self.supervisor_probe_fixture(**options)
+                self.assertEqual(result, {})
+                self.assertNotEqual(progress[field], 0)
+                self.assertNotIn("curl_exit", progress)
+
+    def test_supervisor_probe_records_http_failure_and_timeout(self):
+        for status, code in ((401, 22), (503, 22), (0, 7)):
+            with self.subTest(status=status):
+                result, progress = self.supervisor_probe_fixture(status=f"{status:03}", curl_exit=code)
+                self.assertEqual(result, {})
+                self.assertEqual(progress["http_status"], status)
+                self.assertEqual(progress["curl_exit"], code)
+        result, progress = self.supervisor_probe_fixture(timeout=True)
+        self.assertEqual(result, {})
+        self.assertTrue(progress["command_timeout"])
+        self.assertEqual(progress["token_lookup_exit"], 0)
+        self.assertIsNone(progress["ssh_exit"])
+
+    def test_supervisor_readiness_keeps_both_endpoint_failures(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.qemu = Mock(poll=Mock(return_value=None))
+            h._ssh_ready = Mock(return_value=True)
+            h.ssh = Mock(side_effect=[
+                SimpleNamespace(returncode=22, stdout=b"\n401\n", stderr=b"HAOS_BOOT curl_exit 22\n"),
+                SimpleNamespace(returncode=22, stdout=b"\n503\n", stderr=b"HAOS_BOOT curl_exit 22\n")])
+            def once(check, *args):
+                value = check()
+                if not value:
+                    raise RuntimeError("not ready")
+                return value
+            with patch("haos.host.wait_for", side_effect=once), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "not ready"):
+                    h._wait_boot()
+            self.assertEqual(h.boot_progress["stage"], "waiting_for_supervisor")
+            self.assertEqual(h.boot_progress["supervisor_info"]["http_status"], 401)
+            self.assertEqual(h.boot_progress["root_info"]["http_status"], 503)
+            self.assertIsNone(h.boot_progress["supervisor_healthy"])
+            self.assertEqual(h.boot_progress["supervisor_state"], "missing")
+
+    def test_supervisor_state_and_health_diagnostics_are_allowlisted(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.qemu = Mock(poll=Mock(return_value=None))
+            h._ssh_ready = Mock(return_value=True)
+            h._supervisor_boot_info = Mock(side_effect=[
+                {"healthy": "SYNTHETIC_PRIVATE"}, {"state": "SYNTHETIC_PRIVATE"}])
+            def once(check, *args):
+                value = check()
+                if not value:
+                    raise RuntimeError("not ready")
+                return value
+            with patch("haos.host.wait_for", side_effect=once), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "not ready"):
+                    h._wait_boot()
+            self.assertIsNone(h.boot_progress["supervisor_healthy"])
+            self.assertEqual(h.boot_progress["supervisor_state"], "other")
+            self.assertNotIn("SYNTHETIC_PRIVATE", json.dumps(h.boot_progress))
 
     def test_non_ci_refused_before_kvm(self):
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"GITHUB_ACTIONS": "false"}):

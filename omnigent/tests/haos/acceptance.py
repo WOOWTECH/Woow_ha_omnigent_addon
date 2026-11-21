@@ -59,6 +59,7 @@ class Acceptance:
         self.hooks = load_hooks()
         self.checks = []
         self.evidence = {}
+        self.evidence["boot_progress"] = self.host.boot_progress
         self.phase = "initialization"
         self.username = "haos-ci-admin"
         self.password = secrets.token_urlsafe(24)

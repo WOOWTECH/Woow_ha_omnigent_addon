@@ -29,6 +29,10 @@ PORTS = (10080, 18123, 18000, 12222, 15000, 18443)
 GIB = 1024**3
 
 
+class BootFailure(Exception):
+    """Terminal boot failure; wait_for must not swallow it as a retry."""
+
+
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
@@ -175,6 +179,7 @@ class Host:
                          "-o", "UserKnownHostsFile=" + str(self.private / "known_hosts"),
                          "root@127.0.0.1"]
         self.qemu = None
+        self.boot_progress = {}
 
     def run(self, argv, *, data=None, timeout=120, check=True):
         r = subprocess.run(argv, input=data, capture_output=True, timeout=timeout)
@@ -184,8 +189,8 @@ class Host:
         require(not check or r.returncode == 0, "host/guest command failed")
         return r
 
-    def start(self, argv):
-        with (self.private / "processes.log").open("ab") as log:
+    def start(self, argv, *, log_name="processes.log"):
+        with (self.private / log_name).open("ab") as log:
             p = subprocess.Popen(argv, stdout=log, stderr=log)
         self.processes.append(p)
         return p
@@ -257,6 +262,10 @@ curl --silent --show-error --fail --max-time """ + str(timeout - 10) + r""" \
     def boot(self):
         self.disk_guard()
         require(self.qemu is None or self.qemu.poll() is not None, "guest already running")
+        self.boot_progress.clear()
+        self.boot_progress.update({"stage": "starting_qemu", "ssh_attempts": 0,
+                                   "last_ssh_exit": None, "last_ssh_error": "not_checked"})
+        (self.private / "qemu.log").write_bytes(b"")
         self.qemu = self.start([
             "qemu-system-x86_64", "-machine", "q35,accel=kvm", "-cpu", "host",
             "-smp", "2", "-m", "6144", "-display", "none", "-monitor", "none",
@@ -270,20 +279,169 @@ curl --silent --show-error --fail --max-time """ + str(timeout - 10) + r""" \
             "-nic", "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:10080-:80,"
             "hostfwd=tcp:127.0.0.1:18123-:8123,hostfwd=tcp:127.0.0.1:18000-:8000,"
             "hostfwd=tcp:127.0.0.1:12222-:22222",
-        ])
-        wait_for(lambda: self.qemu.poll() is None and
-                 self.ssh("true", check=False, timeout=10).returncode == 0,
-                 600, "fresh HAOS developer SSH")
+        ], log_name="qemu.log")
+        try:
+            return self._wait_boot()
+        finally:
+            self._capture_boot_signals()
+
+    def _boot_stage(self, stage):
+        self.boot_progress["stage"] = stage
+        print("BOOT " + stage, flush=True)
+
+    def _require_qemu_alive(self):
+        code = self.qemu.poll()
+        if code is not None:
+            self.boot_progress["qemu_exit"] = code
+            self._boot_stage("qemu_exited")
+            raise BootFailure("QEMU exited before guest readiness")
+
+    def _ssh_ready(self):
+        self._require_qemu_alive()
+        self.boot_progress["ssh_attempts"] += 1
+        try:
+            result = self.ssh("true", check=False, timeout=10)
+        except subprocess.TimeoutExpired:
+            self.boot_progress["last_ssh_exit"] = None
+            self.boot_progress["last_ssh_error"] = "command_timeout"
+            return False
+        self.boot_progress["last_ssh_exit"] = result.returncode
+        code = "none" if result.returncode == 0 else "unclassified"
+        if result.returncode:
+            for marker, label in (
+                (b"Connection refused", "connection_refused"),
+                (b"Connection timed out", "connection_timeout"),
+                (b"Permission denied", "authentication_denied"),
+                (b"UNPROTECTED PRIVATE KEY FILE", "key_permissions"),
+                (b"Connection reset", "connection_reset"),
+                (b"REMOTE HOST IDENTIFICATION HAS CHANGED", "host_key_changed"),
+            ):
+                if marker in result.stderr:
+                    code = label
+                    break
+        self.boot_progress["last_ssh_error"] = code
+        return result.returncode == 0
+
+    def _wait_boot(self):
+        self._boot_stage("waiting_for_guest_ssh")
+        wait_for(self._ssh_ready, 600, "fresh HAOS developer SSH")
+        self._boot_stage("waiting_for_supervisor")
         def ready():
-            info = self.supervisor("GET", "/supervisor/info", timeout=30)
+            self._require_qemu_alive()
+            self.boot_progress["supervisor_attempts"] = self.boot_progress.get("supervisor_attempts", 0) + 1
+            info = self._supervisor_boot_info("supervisor_info")
             # Health belongs to supervisor/info; system state belongs to /info.
-            root = self.supervisor("GET", "/info", timeout=30)
+            # Probe both even when one fails, preserving independent HTTP evidence.
+            root = self._supervisor_boot_info("root_info")
+            healthy = info.get("healthy")
+            self.boot_progress["supervisor_healthy"] = healthy if type(healthy) is bool else None
+            state = root.get("state")
+            self.boot_progress["supervisor_state"] = (
+                state if state in ("initialize", "setup", "startup", "running", "freeze", "shutdown", "close")
+                else "missing" if state is None else "other")
             if info.get("healthy") is True and root.get("state") == "running":
                 return dict(info, state=root["state"])
             return None
         info = wait_for(ready, 600, "actual healthy Supervisor API")
+        self._boot_stage("supervisor_ready")
         self.disk_guard()
         return {k: info.get(k) for k in ("version", "arch", "healthy", "state")}
+
+    def _supervisor_boot_info(self, family):
+        """Readiness-only probe; export numeric diagnostics, never command output."""
+        path = {"supervisor_info": "/supervisor/info", "root_info": "/info"}[family]
+        progress = {"ssh_exit": None, "command_timeout": False, "http_status": None,
+                    "api_ok": False}
+        self.boot_progress[family] = progress
+        # No set -e or pipelines around docker inspect: retain each command's
+        # real exit code. Values, HTTP bodies and stderr remain private.
+        command = r'''
+set -u
+probe() { printf 'HAOS_BOOT %s %s\n' "$1" "$2" >&2; }
+missing=0
+for tool in docker curl jq; do
+    command -v "$tool" >/dev/null 2>&1
+    rc=$?; probe "${tool}_available_exit" "$rc"
+    if [ "$rc" -ne 0 ]; then missing=1; fi
+done
+[ "$missing" -eq 0 ] || exit 127
+cli=$(docker inspect hassio_cli)
+rc=$?; probe cli_inspect_exit "$rc"; [ "$rc" -eq 0 ] || exit "$rc"
+token=$(printf '%s' "$cli" | jq -er '.[0].Config.Env[] | select(startswith("SUPERVISOR_TOKEN=")) | sub("^SUPERVISOR_TOKEN=";"") | select(length > 0)')
+rc=$?; probe token_lookup_exit "$rc"; [ "$rc" -eq 0 ] || exit "$rc"
+supervisor=$(docker inspect hassio_supervisor)
+rc=$?; probe supervisor_inspect_exit "$rc"; [ "$rc" -eq 0 ] || exit "$rc"
+count=$(printf '%s' "$supervisor" | jq -er '.[0].NetworkSettings.Networks | length')
+rc=$?; probe network_lookup_exit "$rc"; [ "$rc" -eq 0 ] || exit "$rc"
+probe network_count "$count"
+address=$(printf '%s' "$supervisor" | jq -er '.[0].NetworkSettings.Networks | to_entries[0].value.IPAddress | select(type == "string" and length > 0)')
+rc=$?; probe address_lookup_exit "$rc"; [ "$rc" -eq 0 ] || exit "$rc"
+curl --silent --show-error --fail --max-time 20 --write-out '\n%{http_code}\n' \
+ -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
+ -X GET "http://$address''' + path + '''"
+rc=$?; probe curl_exit "$rc"; exit "$rc"
+'''
+        try:
+            result = self.ssh(command, check=False, timeout=30)
+            progress["ssh_exit"] = result.returncode
+        except subprocess.TimeoutExpired as error:
+            progress["command_timeout"] = True
+            result = error
+        allowed = {"docker_available_exit", "curl_available_exit", "jq_available_exit",
+                   "cli_inspect_exit", "token_lookup_exit", "supervisor_inspect_exit",
+                   "network_lookup_exit", "network_count", "address_lookup_exit", "curl_exit"}
+        for line in (result.stderr or b"").splitlines():
+            match = re.fullmatch(rb"HAOS_BOOT ([a-z_]+) ([0-9]{1,3})", line)
+            if match and match[1].decode() in allowed and int(match[2]) <= 255:
+                progress[match[1].decode()] = int(match[2])
+        body, _, status = (result.stdout or b"").rstrip(b"\n").rpartition(b"\n")
+        if re.fullmatch(rb"[0-9]{3}", status) and (int(status) == 0 or 100 <= int(status) <= 599):
+            progress["http_status"] = int(status)
+        if progress["ssh_exit"] != 0 or progress["http_status"] != 200:
+            return {}
+        try:
+            response = json.loads(body)
+        except ValueError:
+            progress["response_json"] = False
+            return {}
+        progress["response_json"] = True
+        if isinstance(response, dict) and response.get("result") == "ok" and isinstance(response.get("data"), dict):
+            progress["api_ok"] = True
+            return response["data"]
+        return {}
+
+    def _capture_boot_signals(self):
+        """Export only allowlisted labels and integers, never raw log text."""
+        self.boot_progress["qemu_exit"] = self.qemu.poll()
+        def tail(name):
+            path = self.private / name
+            if not path.exists():
+                return b""
+            with path.open("rb") as stream:
+                stream.seek(max(0, path.stat().st_size - 65536))
+                return stream.read(65536)
+        qemu, console = tail("qemu.log"), tail("console.log")
+        markers = {
+            "kvm_initialization": b"failed to initialize kvm",
+            "kvm_access": b"Could not access KVM",
+            "readonly_block": b"Block node is read-only",
+            "missing_file": b"No such file or directory",
+            "permission_denied": b"Permission denied",
+            "port_forward": b"Could not set up host forwarding rule",
+            "kvm_internal_error": b"KVM internal error",
+            "invalid_property": b"Property ",
+        }
+        self.boot_progress["qemu_error_codes"] = [k for k, v in markers.items() if v in qemu]
+        markers = {
+            "linux_started": b"Linux version ",
+            "ha_console": b"Welcome to Home Assistant",
+            "login_prompt": b"homeassistant login:",
+            "config_imported": b"Imported CONFIG succesfully",
+            "ssh_key_imported": b"Update SSH authorized_keys",
+            "kernel_panic": b"Kernel panic",
+            "no_boot_device": b"No bootable device",
+        }
+        self.boot_progress["console_markers"] = [k for k, v in markers.items() if v in console]
 
     def registry(self):
         self.run(["docker", "run", "-d", "--name", self.owner,
