@@ -65,6 +65,13 @@ jobs:
             || { echo "::error::omnigent/config.yaml does not list ${ARCH}"; exit 1; }
           echo "version=$(yq -r '.version' omnigent/config.yaml)" >> "$GITHUB_OUTPUT"
 
+      - name: Validate the pinned MCP source receipt
+        id: source
+        run: |
+          python3 omnigent/build/mcp_artifact.py validate --receipt omnigent/build/artifact-pin.json
+          echo "commit=$(jq -r .sourceCommit omnigent/build/artifact-pin.json)" >> "$GITHUB_OUTPUT"
+          echo "wheel_image=$(jq -r .wheelImage omnigent/build/artifact-pin.json)" >> "$GITHUB_OUTPUT"
+
       - name: Reuse an image that is already published
         id: existing
         if: env.PUBLISH == 'true'
@@ -106,6 +113,8 @@ jobs:
           build-args: |
             BUILD_FROM=${{ matrix.base }}
             BUILD_ARCH=${{ matrix.arch }}
+            OMNIGENT_WHEEL_IMAGE=${{ steps.source.outputs.wheel_image }}
+            OMNIGENT_SOURCE_COMMIT=${{ steps.source.outputs.commit }}
             BUILD_VERSION=${{ steps.v.outputs.version }}
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha,scope=omnigent-${{ matrix.arch }}
@@ -119,6 +128,11 @@ jobs:
           set -euo pipefail
           docker image inspect "${IMAGE}:${VERSION}" \
             --format '{{ index .Config.Labels "io.hass.version" }}' | grep -Fx "${VERSION}"
+          docker image inspect "${IMAGE}:${VERSION}" \
+            --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' | grep -Fx '${{ steps.source.outputs.commit }}'
+          docker run --rm --entrypoint python3 "${IMAGE}:${VERSION}" \
+            /usr/local/lib/omnigent-build/mcp_artifact.py verify-installed \
+            --receipt /usr/share/omnigent/artifact-pin.json
           docker run --rm --entrypoint omnigent "${IMAGE}:${VERSION}" --version
 
       # The SBOM of this image is what the Upgrade comparison scans as the
@@ -142,6 +156,26 @@ jobs:
         with:
           component: woow-omnigent
           image: ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
+
+      # The default PR checkout is a synthetic merge. Record its actual add-on
+      # tree so HAOS acceptance can compare it with the explicit PR-head tree.
+      - name: Bind the PR image to the producer source
+        if: github.event_name == 'pull_request' && matrix.arch == 'amd64'
+        env:
+          HAOS_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          python3 omnigent/tests/haos/provenance.py --image "${IMAGE}:${VERSION}" \
+            --output "${RUNNER_TEMP}/producer-source.json"
+
+      - name: Save the PR image source receipt
+        if: github.event_name == 'pull_request' && matrix.arch == 'amd64'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: haos-image-source-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/producer-source.json
+          retention-days: 7
+          if-no-files-found: error
 
   # Upgrade comparison (pipeline #89): rules and caller contract are in the Store
   # workflow header and Store README "升版比對與 `upgrade-notes.yaml`". The PR build

@@ -5,7 +5,11 @@ description: omnigent 升版：把本 add-on 內建的 omnigent（Dockerfile 的
 
 # omnigent 升版（HA add-on）
 
-本 add-on 用 pip 安裝 PyPI 上的純上游 `omnigent`，版本寫在 `omnigent/Dockerfile` 的 `ARG OMNIGENT_VERSION`。
+0.1.24 起，本 add-on 使用固定 digest 的 WOOW candidate image 攜帶的 portable wheel。
+上游基底版本在 `Dockerfile` 的 `OMNIGENT_VERSION`；WOOW build ID、source commit、
+wheel/UI hash 與 image digest 在 `omnigent/build/artifact-pin.json`。實際 artifact receipt
+與 manifest 隨 image 保留在 `/opt/woow-artifact/`。安裝流程與待補實證見
+`omnigent/build/README.md`。不能用一般 PyPI 同名版本代替 MCP build。
 
 - **merge 就是發版**：改了 `omnigent/config.yaml` 的 `version` 的 PR，一 merge 就發到 WOOW App Store（見 `AGENTS.md`）。
 - **使用者自己更新**：已安裝的使用者在 Supervisor 自己按更新。
@@ -47,13 +51,14 @@ ls omnigent/upgrade-check 2>/dev/null                   # 有沒有資料檢查 
 curl -s https://pypi.org/pypi/omnigent/json | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])'
 ```
 
-上游只用 PyPI 上的正式版。`.devYYYYMMDD` 不上 PyPI；`rc` 有上 PyPI，但屬於 pre-release，也不拿來升版。目標版本（TO）由使用者決定。
+上游基底只用 PyPI 上的正式版；WOOW 功能 build 另須核對固定來源與產物 receipt。`.devYYYYMMDD` 不上 PyPI；`rc` 有上 PyPI，但屬於 pre-release，也不拿來升版。目標版本（TO）由使用者決定。
 
 ### H1 上游差異分析
 
 ```bash
 S=.claude/skills/omnigent-upgrade/scripts
-python3 $S/addon-preflight.py <TO>                 # add-on 的耦合點；紅燈＝有耦合點不成立
+python3 $S/addon-preflight.py <TO> --to-wheel <verified-wheel> --receipt omnigent/build/artifact-pin.json
+# 必須檢查實際候選 wheel；不能只檢查 PyPI 同名版本。紅燈＝有耦合點不成立。
 $S/upstream-diff.sh v<FROM> v<TO> <上游 clone>     # 上游這段期間的變動
 ```
 
@@ -71,6 +76,7 @@ $S/upstream-diff.sh v<FROM> v<TO> <上游 clone>     # 上游這段期間的變�
 
 - **版本字串**：用 `git grep -nF '<FROM>'` 找出所有寫死 omnigent 版本的地方，逐一判斷要不要改。範圍包括 Dockerfile 的 ARG、註解、LABEL，`config.yaml` 的 description 與 feature 註解，`README.md`，`DOCS.md` 裡給 runner 的安裝版本，以及 `init-addon-config` 的註解。add-on 的 `version` 升一版，**`nginx.conf` 裡的 `assets-vX-Y-Z` 也要跟著改**（preflight 第 1 段會檢查）。
 - **ingress**：照「本次決定」調整 nginx 注入，見 `references/ingress.md`。改完 preflight 第 1 段要全部綠燈。
+- **固定產物**：從已驗證的 `candidate-image.json` 更新 `artifact-pin.json`，使用公開可匿名拉取的 `wheelImage@sha256`；null、snapshot、只有 mutable tag 都不能發版。兩架構必須使用同一份 wheel。
 - **資料檢查 hook**：在 `omnigent/upgrade-check/` 補上或更新 `seed`／`verify`，見 `references/release.md` 的「資料檢查」。
 - **CHANGELOG**（英文）：寫明 omnigent 的新版本、使用者看得到的變化，以及三件事：更新前先做備份、不能降版、回滾就是還原備份。
 - **`upgrade-notes.yaml`**：升版比對的報告要求時才建立，`change`、`key` 照報告複製。
@@ -81,7 +87,7 @@ $S/upstream-diff.sh v<FROM> v<TO> <上游 clone>     # 上游這段期間的變�
 - **required checks**：名稱以 branch rules 為準，用下面的指令查：`gh api repos/WOOWTECH/Woow_ha_omnigent_addon/rules/branches/main --jq '.[]|select(.type=="required_status_checks")|.parameters.required_status_checks[].context'`。
   - 一輪約 7 分鐘，排隊時會超過 15 分鐘。
   - 重跑用「Re-run failed jobs」即可：沒重跑的 job，其 artifact 從它實際執行的那次 attempt 讀（pipeline #131），見 `AGENTS.md`。
-- **CI 驗不到的部分**：CI 只驗 amd64 能不能啟動；有 `verify` hook 時才會一起驗資料。ingress 的登入導向、aarch64 的執行期、備份還原，都要在 HA 上照 `references/ha-acceptance.md` 驗。
+- **CI 與實機證據**：Upgrade comparison 的 mock Supervisor 驗 amd64 啟動與資料 hooks；`HAOS acceptance (amd64)` 用全新 HAOS guest 驗真正 Supervisor、Ingress、localhost TLS MCP、備份還原與 cold boot。取得對應 PR head 的成功 receipt 才算通過。aarch64、外網 Pi 與其餘未涵蓋項目，照 `references/ha-acceptance.md` 另補實證。
 
 ### H4 merge
 

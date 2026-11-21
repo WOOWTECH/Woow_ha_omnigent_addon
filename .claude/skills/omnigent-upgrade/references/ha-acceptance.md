@@ -1,6 +1,10 @@
 # H3：HA 實機驗收
 
-CI 只驗 amd64 版能不能啟動。下面這些要在一台真的 HAOS 上驗；能找到 aarch64 的機器，就兩個 arch 都驗。
+既有 Upgrade comparison 透過 mock Supervisor 驗 amd64 啟動與資料 hooks。
+新增的 `HAOS acceptance (amd64)` PR job 使用全新 HAOS guest 與真正 Supervisor，
+流程、產物綁定與涵蓋範圍見 [HAOS CI 說明](../../../../omnigent/tests/haos/README.md)。
+必須取得該 PR head 的完整成功 receipt，才能把對應項目記為通過；harness unit tests
+不算實機結果。以下清單仍適用；aarch64、外網 Pi 與文件列出的缺項另補實證。
 
 ## 測試機
 
@@ -64,3 +68,12 @@ CI 只驗 amd64 版能不能啟動。下面這些要在一台真的 HAOS 上驗�
 
 - 2026-11-08 對 0.1.19（全新安裝，不是升級）驗過 #2、#9、#10、#11，見 PR #19 的留言。
 - 2026-11-08 對 0.1.19 → 0.1.20 跑完整份清單（HAOS 18.1，amd64）：#7 只驗了 0.20.0 的 host 連得上，#8 沒驗，其餘通過。見 PR #20 的留言。
+
+## Native MCP（0.1.24 起）
+
+- 在不同的 HA Ingress 與 public HTTPS origin 開管理頁，複製 URL 必須等於 API 的 `connection_url`，prefix 只出現一次。
+- 不帶 HA／瀏覽器 cookie，透過 public URL 完成 MCP initialize、tools/list、歷史分頁與帳號 ACL 驗證。
+- 測試 proxy POST／GET／DELETE、SSE 與 token 日誌遮蔽；外部 HTTPS proxy 另驗，不以 bundled Ingress nginx 代替。
+- 保存 active/revoked profiles，重新啟動及 MCP A→B 升級後原 URL 仍分別有效／無效。
+- 使用更新前 cold backup 實際還原，驗帳號、session、檔案與更新前 profiles。
+- amd64 與 aarch64 分別記錄映像 digest、source commit、migration head 與實機結果；缺少的證據明列 pending。
