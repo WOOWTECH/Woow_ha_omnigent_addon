@@ -1,0 +1,27 @@
+name: Test native MCP add-on contracts
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    paths:
+      - "omnigent/**"
+      - ".github/workflows/test-mcp-addon.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install the proxy test runtime
+        run: sudo apt-get update && sudo apt-get install -y nginx
+      - name: Test build pins, options and real HTTP transport
+        env:
+          NGINX_BINARY: /usr/sbin/nginx
+        run: python3 -m unittest discover -s omnigent/tests -p 'test_mcp*.py' -v
+      - name: Existing admin startup protections
+        run: sh omnigent/tests/test-admin-password.sh

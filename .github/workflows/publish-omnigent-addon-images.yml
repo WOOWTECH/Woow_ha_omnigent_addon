@@ -65,6 +65,13 @@ jobs:
             || { echo "::error::omnigent/config.yaml does not list ${ARCH}"; exit 1; }
           echo "version=$(yq -r '.version' omnigent/config.yaml)" >> "$GITHUB_OUTPUT"
 
+      - name: Validate the pinned MCP source receipt
+        id: source
+        run: |
+          python3 omnigent/build/mcp_artifact.py validate --receipt omnigent/build/artifact-pin.json
+          echo "commit=$(jq -r .sourceCommit omnigent/build/artifact-pin.json)" >> "$GITHUB_OUTPUT"
+          echo "wheel_image=$(jq -r .wheelImage omnigent/build/artifact-pin.json)" >> "$GITHUB_OUTPUT"
+
       - name: Reuse an image that is already published
         id: existing
         if: env.PUBLISH == 'true'
@@ -106,6 +113,8 @@ jobs:
           build-args: |
             BUILD_FROM=${{ matrix.base }}
             BUILD_ARCH=${{ matrix.arch }}
+            OMNIGENT_WHEEL_IMAGE=${{ steps.source.outputs.wheel_image }}
+            OMNIGENT_SOURCE_COMMIT=${{ steps.source.outputs.commit }}
             BUILD_VERSION=${{ steps.v.outputs.version }}
             BUILD_DATE=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha,scope=omnigent-${{ matrix.arch }}
@@ -119,6 +128,11 @@ jobs:
           set -euo pipefail
           docker image inspect "${IMAGE}:${VERSION}" \
             --format '{{ index .Config.Labels "io.hass.version" }}' | grep -Fx "${VERSION}"
+          docker image inspect "${IMAGE}:${VERSION}" \
+            --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' | grep -Fx '${{ steps.source.outputs.commit }}'
+          docker run --rm --entrypoint python3 "${IMAGE}:${VERSION}" \
+            /usr/local/lib/omnigent-build/mcp_artifact.py verify-installed \
+            --receipt /usr/share/omnigent/artifact-pin.json
           docker run --rm --entrypoint omnigent "${IMAGE}:${VERSION}" --version
 
       # The SBOM of this image is what the Upgrade comparison scans as the
