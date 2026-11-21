@@ -294,6 +294,16 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(upload[0]["with"]["path"], "$" + "{{ runner.temp }}/haos-report/haos-acceptance.json")
         self.assertIn('sudo setfacl -m "u:$(id -un):rw" /dev/kvm', path.read_text())
 
+    def test_workflow_report_directory_uses_runner_only_in_step_context(self):
+        path = Path(__file__).resolve().parents[2] / ".github/workflows/test-haos-addon.yml"
+        job = yaml.safe_load(path.read_text())["jobs"]["haos"]
+        # GitHub evaluates job env before a runner exists. runner is available
+        # in step env, as documented in the Actions context-availability table.
+        self.assertNotIn("HAOS_REPORT_DIR", job["env"])
+        self.assertTrue(all("runner." not in str(value) for value in job["env"].values()))
+        boot = next(step for step in job["steps"] if "python -m haos.acceptance" in step.get("run", ""))
+        self.assertEqual(boot["env"]["HAOS_REPORT_DIR"], "$" + "{{ runner.temp }}/haos-report")
+
 
 class RealTLSFixtureTests(unittest.TestCase):
     def test_actual_trusted_tls_prefix_cookie_isolation_and_log_hygiene(self):

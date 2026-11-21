@@ -20,7 +20,6 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONPATH: omnigent/tests
       HAOS_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-      HAOS_REPORT_DIR: ${{ runner.temp }}/haos-report
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -45,6 +44,7 @@ jobs:
       - name: Boot fresh HAOS and exercise the actual Supervisor
         env:
           GH_TOKEN: ${{ github.token }}
+          HAOS_REPORT_DIR: ${{ runner.temp }}/haos-report
         run: timeout --signal=TERM --kill-after=30s 50m python -m haos.acceptance
       - name: Upload only the sanitized acceptance receipt
         if: always()
