@@ -113,6 +113,11 @@ fixtures, creates a Supervisor cold backup, updates to 0.1.24, and checks the
 task/agent fields, member login, session ACLs and artifact bytes.
 
 The real HA owner signs in through Chromium and opens the HA sidebar Ingress.
+The harness registers a filtered `framenavigated` expectation before clicking the
+sidebar link, with a 60-second bound. This keeps Playwright's synchronous event
+loop processing delayed frame navigation; Python sleep polling of cached frame
+URLs can leave [Playwright state outdated](https://playwright.dev/python/docs/library#timesleep-leads-to-outdated-state).
+Only an Ingress frame navigation satisfies the wait; unrelated frames do not.
 The browser checks add-on login, lazy settings pages, MCP creation/copy, one-time
 URL hiding, expired-session navigation and logout. A separate localhost HTTPS
 proxy serves the complete `/omnigent` deployment prefix. Its generated CA is

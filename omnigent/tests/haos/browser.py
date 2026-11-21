@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .host import require, wait_for
+from .host import require
 
 
 def onboard(base, username, password):
@@ -63,6 +63,17 @@ def error_code(error):
     return "other"
 
 
+def open_ingress(page, sidebar, progress, *, timeout=60000):
+    # Register before clicking: synchronous Playwright must pump its event loop
+    # while the iframe attaches/navigates, rather than polling cached Frame URLs.
+    progress["stage"] = "ingress_sidebar_link"
+    with page.expect_event("framenavigated", predicate=lambda f: "/api/hassio_ingress/" in f.url,
+                           timeout=timeout) as selected:
+        sidebar.get_by_role("link", name="Omnigent", exact=True).click()
+        progress["stage"] = "ingress_frame"
+    return selected.value
+
+
 def ingress(base, ha_username, ha_password, username, password, member, public_base, *, progress=None):
     from playwright.sync_api import sync_playwright, expect
 
@@ -106,12 +117,7 @@ def ingress(base, ha_username, ha_password, username, password, member, public_b
         sidebar = page.locator("ha-sidebar")
         progress["stage"] = "ha_sidebar"
         expect(sidebar).to_be_visible(timeout=60000)
-        progress["stage"] = "ingress_sidebar_link"
-        sidebar.get_by_role("link", name="Omnigent", exact=True).click()
-        progress["stage"] = "ingress_frame"
-        frame = wait_for(lambda: next((f for f in page.frames if
-                                      "/api/hassio_ingress/" in f.url), None),
-                         60, "HA sidebar Ingress iframe", 1)
+        frame = open_ingress(page, sidebar, progress)
         progress["stage"] = "addon_username"
         frame.get_by_label("Username", exact=True).fill(username)
         progress["stage"] = "addon_password"

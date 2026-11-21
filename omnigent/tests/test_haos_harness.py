@@ -1434,7 +1434,8 @@ class BrowserTests(unittest.TestCase):
                 context = chromium.new_context.return_value
                 page = context.new_page.return_value
                 frame = Mock(url="http://127.0.0.1:18123/api/hassio_ingress/PRIVATE/")
-                page.frames = [frame]
+                page.expect_event = MagicMock()
+                page.expect_event.return_value.__enter__.return_value.value = frame
                 created = {"token": "PRIVATE", "connection_url": "https://localhost:18443/omnigent/mcp/private_PRIVATE"}
                 page.expect_response = MagicMock()
                 page.expect_response.return_value.__enter__.return_value.value.json.return_value = created
@@ -1524,6 +1525,64 @@ class BrowserTests(unittest.TestCase):
                                                    "same_origin": True})
             self.assertNotIn("PRIVATE", json.dumps(progress))
             self.assertNotIn("127.0.0.1", json.dumps(progress))
+
+    def test_real_browser_waits_for_ingress_navigation(self):
+        from playwright.sync_api import sync_playwright, TimeoutError
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+            def do_GET(self):
+                if self.path.startswith("/api/hassio_ingress/") or self.path == "/unrelated":
+                    body = b"<h1>frame fixture</h1>"
+                else:
+                    delay = 250 if self.path == "/delayed" else 0
+                    include_ingress = self.path != "/missing"
+                    script = ("event.preventDefault();let other=document.createElement('iframe');"
+                              "other.src='/unrelated';document.body.append(other);")
+                    if include_ingress:
+                        script += ("setTimeout(() => {let f=document.createElement('iframe');"
+                                   "f.src='/api/hassio_ingress/SYNTHETIC/';document.body.append(f);},"
+                                   + str(delay) + ");")
+                    body = ('<ha-sidebar style="display:block"><a href="#" onclick="' + script
+                            + '">Omnigent</a></ha-sidebar>').encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *args):
+                pass
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with sync_playwright() as driver:
+                chromium = driver.chromium.launch(headless=True, args=["--no-sandbox"])
+                context = chromium.new_context()
+                try:
+                    for path in ("/delayed", "/immediate", "/missing"):
+                        with self.subTest(path=path):
+                            page = context.new_page()
+                            try:
+                                page.goto("http://127.0.0.1:" + str(server.server_port) + path)
+                                progress = {}
+                                if path == "/missing":
+                                    with self.assertRaises(TimeoutError):
+                                        browser.open_ingress(page, page.locator("ha-sidebar"), progress, timeout=500)
+                                else:
+                                    frame = browser.open_ingress(page, page.locator("ha-sidebar"), progress, timeout=2000)
+                                    self.assertIn("/api/hassio_ingress/", frame.url)
+                                    self.assertEqual(frame.get_by_role("heading").inner_text(), "frame fixture")
+                                self.assertEqual(progress["stage"], "ingress_frame")
+                                self.assertNotIn("SYNTHETIC", json.dumps(progress))
+                            finally:
+                                page.close()
+                finally:
+                    context.close()
+                    chromium.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_configured_ha_ports_support_discovery_and_real_browser(self):
         from playwright.sync_api import sync_playwright
