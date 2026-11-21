@@ -35,7 +35,7 @@ EXCLUDED = [
     "Native arm64 HAOS runtime",
     "Distinct MCP candidate A-to-B upgrade",
     "External runner sessions and terminal WebSocket",
-    "Long-lived MCP SSE stream (candidate uses stateless JSON responses)",
+    "Long-duration MCP SSE delivery and reconnect (GET establishment only)",
 ]
 
 
@@ -302,30 +302,78 @@ http {{
     def tls_rpc(self, profile, method, params=None):
         expected = PUBLIC_BASE + "/mcp/private_" + profile["token"]
         require(profile["connection_url"] == expected, "canonical URL mismatch")
-        with httpx.Client(verify=self.ssl_context, trust_env=False, timeout=30) as c:
+        progress = self.evidence.setdefault("tls_rpc", {})
+        progress.clear()
+        progress.update(method=method if method in ("initialize", "tools/list", "tools/call") else "other",
+                        status=None, response_json=False, error=None)
+        try:
+            with httpx.Client(verify=self.ssl_context, trust_env=False, timeout=30) as c:
+                require(not c.cookies, "MCP client unexpectedly has browser cookies")
+                r = c.post(expected, json={"jsonrpc": "2.0", "id": 1, "method": method,
+                                          "params": params or {}},
+                           headers={"Accept": "application/json, text/event-stream"})
+                progress["status"] = r.status_code
+                result = r.json()
+                progress["response_json"] = True
+                return r.status_code, result
+        except httpx.TimeoutException:
+            progress["error"] = "timeout"
+            raise
+        except httpx.HTTPError:
+            progress["error"] = "transport_error"
+            raise
+        except ValueError:
+            progress["error"] = "invalid_json"
+            raise
+
+    def tls_methods(self, profile):
+        expected = PUBLIC_BASE + "/mcp/private_" + profile["token"]
+        require(profile["connection_url"] == expected, "canonical URL mismatch")
+        methods = self.evidence.setdefault("tls_methods", {})
+        with httpx.Client(verify=self.ssl_context, trust_env=False, timeout=10) as c:
             require(not c.cookies, "MCP client unexpectedly has browser cookies")
-            r = c.post(expected, json={"jsonrpc": "2.0", "id": 1, "method": method,
-                                      "params": params or {}},
-                       headers={"Accept": "application/json, text/event-stream"})
-            return r.status_code, r.json()
+            for method in ("GET", "DELETE"):
+                progress = methods[method] = {"status": None, "sse": None, "closed": False}
+                response = None
+                try:
+                    # SDK JSON mode affects POST replies. GET opens an SSE
+                    # stream; waiting for its complete body times out normally.
+                    with c.stream(method, expected, headers={"Accept": "application/json, text/event-stream"}) as response:
+                        progress["status"] = response.status_code
+                        progress["sse"] = response.headers.get("content-type", "").split(";", 1)[0].lower() == "text/event-stream"
+                        if method == "GET":
+                            require(response.status_code == 200 and progress["sse"], "MCP GET did not establish SSE")
+                        else:
+                            require(response.status_code == 405, "stateless MCP DELETE response changed")
+                except httpx.TimeoutException:
+                    progress["error"] = "timeout"
+                    raise
+                except httpx.HTTPError:
+                    progress["error"] = "transport_error"
+                    raise
+                finally:
+                    progress["closed"] = response is not None and response.is_closed
 
     def profiles(self):
+        progress = self.evidence.setdefault("tls_profiles", {})
+        progress["stage"] = "seed"
         api = self.api()
         self.hooks.seed_profiles(api, self.state)
         Path(self.hooks.state_path()).write_text(json.dumps(self.state))
         # Route the existing ACL/history/profile checks through the exact TLS
         # connection_url rather than the hook's direct-HTTP convenience path.
         self.hooks.rpc = self.tls_rpc
+        progress["stage"] = "verify_saved_profiles"
         self.hooks.verify_profiles(api, self.state)
+        progress["stage"] = "history_acl_and_revocation"
         self.hooks.new_profile_lifecycle(api, self.state)
+        progress["stage"] = "tool_count"
         profile = self.state["profiles"]["active"]
         status, result = self.tls_rpc(profile, "tools/list")
         require(status == 200 and len(result["result"]["tools"]) == 15, "unexpected MCP tool count")
-        with httpx.Client(verify=self.ssl_context, trust_env=False, timeout=10) as c:
-            for method in ("GET", "DELETE"):
-                r = c.request(method, profile["connection_url"],
-                              headers={"Accept": "application/json, text/event-stream"})
-                require(r.status_code == 405, "stateless MCP method response changed")
+        progress["stage"] = "http_methods"
+        self.tls_methods(profile)
+        progress["stage"] = "complete"
 
     def invalidate_after_backup(self):
         api = self.api()

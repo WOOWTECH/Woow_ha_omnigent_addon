@@ -110,8 +110,13 @@ URL hiding, expired-session navigation and logout. A separate localhost HTTPS
 proxy serves the complete `/omnigent` deployment prefix. Its generated CA is
 explicitly trusted by the MCP client: certificate verification stays enabled.
 The copied URL must equal the API's `connection_url`; cookie-free requests check
-initialize, 15 tools, session/history ACLs and active/revoked profiles. GET and
-DELETE must return the candidate's stateless-transport 405 response.
+initialize, 15 tools, session/history ACLs and active/revoked profiles. The
+candidate's MCP SDK 1.30.0 [GET handler](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/server/streamable_http.py)
+opens SSE even with JSON POST replies and stateless sessions. The GET probe uses
+a streaming client, requires HTTP 200 with `text/event-stream`, and closes the
+response explicitly without waiting for an unbounded body. DELETE must return
+405 because this candidate does not maintain transport sessions. This tests
+stream establishment through TLS, not long-duration event delivery or reconnect.
 
 Actual Supervisor backup/restore checks include:
 
@@ -144,6 +149,10 @@ guest shell. A stopped CLI or absent/empty token remains retryable during startu
 missing executables and jq usage/compile errors fail immediately. Health and root
 state still require successful authenticated HTTP responses from both endpoints.
 An exited QEMU process fails immediately instead of consuming the SSH timeout.
+TLS MCP diagnostics retain fixed profile-check stages, the last allowlisted RPC
+method/status/JSON-result flag, and GET/DELETE status/SSE-media-type/closed flags.
+Timeout and transport failures use fixed labels; URLs, tokens, headers and
+RPC parameters/results are excluded. HTTP client timeouts remain bounded.
 Later Supervisor operations retain the last fixed operation label, method,
 SSH exit/timeout, HTTP status and `ok`/`error`/unknown result. The two recognized
 upstream error keys are `store_app_not_found_error` and `system_not_ready_error`;

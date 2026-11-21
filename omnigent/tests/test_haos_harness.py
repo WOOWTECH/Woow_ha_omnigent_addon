@@ -1140,6 +1140,76 @@ class HostTests(unittest.TestCase):
 
 
 class AcceptanceTests(unittest.TestCase):
+    def test_tls_method_probe_streams_and_closes_without_reading_sse_body(self):
+        class OpenStream(httpx.SyncByteStream):
+            closed = False
+            def __iter__(self):
+                raise AssertionError("must not wait for the end of an SSE stream")
+            def close(self):
+                self.closed = True
+        stream, seen = OpenStream(), []
+        def handle(request):
+            seen.append((request.method, request.headers.get("cookie")))
+            if request.method == "GET":
+                return httpx.Response(200, headers={"content-type": "text/event-stream; charset=utf-8"}, stream=stream)
+            self.assertTrue(stream.closed)
+            return httpx.Response(405)
+        suite = acceptance.Acceptance.__new__(acceptance.Acceptance)
+        suite.evidence, suite.ssl_context = {}, True
+        profile = {"token": "SYNTHETIC_METHOD_TEST",
+                   "connection_url": acceptance.PUBLIC_BASE + "/mcp/private_SYNTHETIC_METHOD_TEST"}
+        client = httpx.Client(transport=httpx.MockTransport(handle))
+        with patch("haos.acceptance.httpx.Client", return_value=client):
+            suite.tls_methods(profile)
+        self.assertEqual(seen, [("GET", None), ("DELETE", None)])
+        self.assertTrue(stream.closed)
+        self.assertEqual(suite.evidence["tls_methods"], {
+            "GET": {"status": 200, "sse": True, "closed": True},
+            "DELETE": {"status": 405, "sse": False, "closed": True}})
+        self.assertNotIn("SYNTHETIC", json.dumps(suite.evidence))
+
+    def test_tls_method_probe_rejects_wrong_status_or_media_type(self):
+        for get_status, content_type, delete_status in ((200, "text/html", 405),
+                (405, "application/json", 405), (401, "application/json", 405),
+                (200, "text/event-stream", 200)):
+            with self.subTest(get_status=get_status, content_type=content_type, delete_status=delete_status):
+                suite = acceptance.Acceptance.__new__(acceptance.Acceptance)
+                suite.evidence, suite.ssl_context = {}, True
+                def handle(request):
+                    return httpx.Response(get_status if request.method == "GET" else delete_status,
+                        headers={"content-type": content_type})
+                client = httpx.Client(transport=httpx.MockTransport(handle))
+                with patch("haos.acceptance.httpx.Client", return_value=client), self.assertRaises(RuntimeError):
+                    suite.tls_methods({"token": "SYNTHETIC_METHOD_TEST",
+                        "connection_url": acceptance.PUBLIC_BASE + "/mcp/private_SYNTHETIC_METHOD_TEST"})
+                last = "GET" if get_status != 200 or content_type != "text/event-stream" else "DELETE"
+                self.assertTrue(suite.evidence["tls_methods"][last]["closed"])
+
+    def test_tls_diagnostics_never_include_private_rpc_or_request_values(self):
+        for rpc in (True, False):
+            for error in (httpx.ReadTimeout("PRIVATE_ERROR"), httpx.ConnectError("PRIVATE_ERROR")):
+                with self.subTest(rpc=rpc, error=type(error).__name__):
+                    suite = acceptance.Acceptance.__new__(acceptance.Acceptance)
+                    suite.evidence, suite.ssl_context = {}, True
+                    profile = {"token": "PRIVATE_TOKEN",
+                               "connection_url": acceptance.PUBLIC_BASE + "/mcp/private_PRIVATE_TOKEN"}
+                    def handle(request):
+                        raise error
+                    client = httpx.Client(transport=httpx.MockTransport(handle))
+                    with patch("haos.acceptance.httpx.Client", return_value=client), self.assertRaises(httpx.HTTPError):
+                        if rpc:
+                            suite.tls_rpc(profile, "PRIVATE_METHOD", {"PRIVATE_PARAM": "PRIVATE_VALUE"})
+                        else:
+                            suite.tls_methods(profile)
+                    self.assertNotIn("PRIVATE", json.dumps(suite.evidence))
+                    progress = suite.evidence["tls_rpc"] if rpc else suite.evidence["tls_methods"]["GET"]
+                    self.assertEqual(progress["error"], "timeout" if isinstance(error, httpx.TimeoutException) else "transport_error")
+                    self.assertIsNone(progress["status"])
+                    if rpc:
+                        self.assertEqual(progress["method"], "other")
+                    else:
+                        self.assertFalse(progress["closed"])
+
     def test_install_uses_bound_guest_manifest_for_baseline_and_candidate(self):
         for baseline in (True, False):
             with self.subTest(baseline=baseline), tempfile.TemporaryDirectory() as d:
@@ -1317,6 +1387,8 @@ class RealTLSFixtureTests(unittest.TestCase):
     def test_actual_trusted_tls_prefix_cookie_isolation_and_log_hygiene(self):
         observed = []
         class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
             def do_POST(self):
                 payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 observed.append((self.path, self.headers.get("Cookie"), payload))
@@ -1326,6 +1398,20 @@ class RealTLSFixtureTests(unittest.TestCase):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            def do_GET(self):
+                observed.append((self.path, self.headers.get("Cookie"), {"method": "GET"}))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.flush()
+                # No Content-Length or EOF: the client must close the stream.
+
+            def do_DELETE(self):
+                observed.append((self.path, self.headers.get("Cookie"), {"method": "DELETE"}))
+                self.send_response(405)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
 
             def log_message(self, *args):
                 pass
@@ -1342,6 +1428,7 @@ class RealTLSFixtureTests(unittest.TestCase):
                 suite = acceptance.Acceptance.__new__(acceptance.Acceptance)
                 suite.private = Path(d)
                 suite.host = host.Host(d)
+                suite.evidence = {}
                 try:
                     with patch("haos.acceptance.DIRECT", "http://127.0.0.1:" + str(server.server_port)), \
                             patch("haos.acceptance.PUBLIC_BASE", origin + "/omnigent"):
@@ -1352,6 +1439,9 @@ class RealTLSFixtureTests(unittest.TestCase):
                         self.assertEqual(result["result"], {})
                         self.assertEqual(observed[0][:2], ("/mcp/private_" + token, None))
                         self.assertEqual(observed[0][2]["method"], "initialize")
+                        suite.tls_methods(profile)
+                        self.assertEqual([row[2]["method"] for row in observed], ["initialize", "GET", "DELETE"])
+                        self.assertTrue(all(row[1] is None for row in observed))
                         with self.assertRaises(httpx.ConnectError):
                             httpx.get(origin, trust_env=False)
                         for log in Path(d).glob("*.log"):
