@@ -36,7 +36,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86 qemu-utils ovmf nginx openssl dosfstools mtools acl
           sudo systemctl stop nginx
-          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
           python -m pip install -r omnigent/tests/haos/requirements.txt
           python -m playwright install --with-deps chromium
       - name: Validate the acceptance harness

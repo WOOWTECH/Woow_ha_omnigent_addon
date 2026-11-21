@@ -10,6 +10,7 @@ import platform
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import tarfile
 import threading
@@ -180,6 +181,10 @@ class Host:
                          "root@127.0.0.1"]
         self.qemu = None
         self.boot_progress = {}
+        self.original_kvm_acl = None
+        self.kvm_identity = None
+        self.kvm_access_baseline = None
+        self.kvm_access_progress = {"refreshes": [], "restored": None, "cleanup_failure": None}
 
     def run(self, argv, *, data=None, timeout=120, check=True):
         r = subprocess.run(argv, input=data, capture_output=True, timeout=timeout)
@@ -222,6 +227,8 @@ curl --silent --show-error --fail --max-time """ + str(timeout - 10) + r""" \
     def preflight(self):
         require(os.environ.get("GITHUB_ACTIONS") == "true", "real VM runner is CI-only")
         require(platform.machine() == "x86_64", "native amd64 required")
+        require(os.getuid() != 0, "QEMU must run as the unprivileged runner")
+        self.refresh_kvm_access("preflight")
         # Test the KVM ioctl, not just the existence of a device node.
         with open("/dev/kvm", "r+b", buffering=0) as kvm:
             require(fcntl.ioctl(kvm, 0xAE00, 0) == 12, "unsupported KVM API")
@@ -234,6 +241,58 @@ curl --silent --show-error --fail --max-time """ + str(timeout - 10) + r""" \
                 s.bind(("127.0.0.1", port))
         return {"architecture": "amd64", "kvm_api": 12, "free_bytes": free,
                 "guest_vcpus": 2, "guest_memory_mib": 6144, "virtual_disk_gib": 32}
+
+    def _kvm_access_snapshot(self):
+        info = Path("/dev/kvm").stat()
+        require(stat.S_ISCHR(info.st_mode), "KVM device is not a character device")
+        # ACL masks can change mode bits; they are deliberately not identity.
+        identity = (info.st_dev, info.st_ino, info.st_rdev, info.st_uid, info.st_gid)
+        acl = self.run(["getfacl", "-p", "-n", "/dev/kvm"], timeout=5).stdout
+        return identity, acl, os.access("/dev/kvm", os.R_OK | os.W_OK, effective_ids=True)
+
+    def refresh_kvm_access(self, phase):
+        require(phase in ("preflight", "boot"), "invalid KVM access phase")
+        # VM create/close events may replace named ACLs asynchronously. Drain
+        # pending events BEFORE the grant immediately preceding each launch.
+        self.run(["udevadm", "settle", "--timeout=5"], timeout=6)
+        before = self._kvm_access_snapshot()
+        if self.original_kvm_acl is None:
+            self.original_kvm_acl = before[1]
+            self.kvm_identity = before[0]
+        require(before[0] == self.kvm_identity, "KVM device identity changed")
+        record = {"phase": phase, "effective_access_before": before[2],
+                  "effective_access_after": None, "acl_changed_since_grant":
+                  before[1] != self.kvm_access_baseline[1] if self.kvm_access_baseline else None}
+        self.kvm_access_progress["refreshes"].append(record)
+        self.run(["sudo", "-n", "setfacl", "-m", f"u:{os.getuid()}:rw", "/dev/kvm"], timeout=5)
+        after = self._kvm_access_snapshot()
+        record["effective_access_after"] = after[2]
+        require(after[0] == self.kvm_identity, "KVM device identity changed")
+        require(after[2], "KVM access grant ineffective")
+        self.kvm_access_baseline = after
+
+    def restore_kvm_access(self):
+        if self.original_kvm_acl is None:
+            return
+        progress = self.kvm_access_progress
+        progress["restored"] = False
+        progress["cleanup_failure"] = "qemu_not_reaped"
+        require(self.qemu is None or self.qemu.poll() is not None, "QEMU must be reaped before ACL restore")
+        # Restore even when settle fails, but never write an ACL to a replaced
+        # device. The identity saved before the FIRST grant stays authoritative.
+        settle_error = None
+        try:
+            self.run(["udevadm", "settle", "--timeout=5"], timeout=6)
+        except (RuntimeError, OSError, subprocess.SubprocessError) as error:
+            settle_error = error
+        progress["cleanup_failure"] = "device_identity"
+        require(self._kvm_access_snapshot()[0] == self.kvm_identity, "KVM device identity changed")
+        progress["cleanup_failure"] = "acl_restore"
+        self.run(["sudo", "-n", "setfacl", "--restore=-"], data=self.original_kvm_acl, timeout=5)
+        progress["restored"] = True
+        progress["cleanup_failure"] = "udev_settle" if settle_error else None
+        if settle_error:
+            raise settle_error
 
     def watch_disk(self):
         def guard():
@@ -263,9 +322,11 @@ curl --silent --show-error --fail --max-time """ + str(timeout - 10) + r""" \
         self.disk_guard()
         require(self.qemu is None or self.qemu.poll() is not None, "guest already running")
         self.boot_progress.clear()
-        self.boot_progress.update({"stage": "starting_qemu", "ssh_attempts": 0,
+        self.boot_progress.update({"stage": "refreshing_kvm_access", "ssh_attempts": 0,
                                    "last_ssh_exit": None, "last_ssh_error": "not_checked"})
         (self.private / "qemu.log").write_bytes(b"")
+        self.refresh_kvm_access("boot")
+        self.boot_progress["stage"] = "starting_qemu"
         self.qemu = self.start([
             "qemu-system-x86_64", "-machine", "q35,accel=kvm", "-cpu", "host",
             "-smp", "2", "-m", "6144", "-display", "none", "-monitor", "none",
@@ -495,6 +556,12 @@ rc=$?; probe curl_exit "$rc"; exit "$rc"
 
     def cleanup(self):
         self.guard_stop.set()
+        try:
+            self._cleanup_resources()
+        finally:
+            self.restore_kvm_access()
+
+    def _cleanup_resources(self):
         for p in reversed(self.processes):
             if p.poll() is None:
                 p.terminate()

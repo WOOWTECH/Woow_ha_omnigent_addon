@@ -144,10 +144,167 @@ class BindingTests(unittest.TestCase):
 
 
 class HostTests(unittest.TestCase):
+    def test_kvm_refresh_settles_before_each_grant_and_keeps_original_acl(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            identity = (1, 2, 3, 0, 100)
+            snapshots = [(identity, b"original", False), (identity, b"grant-one", True),
+                         (identity, b"original", False), (identity, b"grant-two", True)]
+            h._kvm_access_snapshot = Mock(side_effect=snapshots)
+            h.run = Mock()
+            with patch("haos.host.os.getuid", return_value=1001):
+                h.refresh_kvm_access("preflight")
+                h.refresh_kvm_access("boot")
+            self.assertEqual(h.original_kvm_acl, b"original")
+            self.assertEqual(h.kvm_access_baseline, snapshots[-1])
+            self.assertEqual([c.args[0] for c in h.run.call_args_list], [
+                ["udevadm", "settle", "--timeout=5"],
+                ["sudo", "-n", "setfacl", "-m", "u:1001:rw", "/dev/kvm"],
+                ["udevadm", "settle", "--timeout=5"],
+                ["sudo", "-n", "setfacl", "-m", "u:1001:rw", "/dev/kvm"]])
+            self.assertTrue(h.kvm_access_progress["refreshes"][1]["acl_changed_since_grant"])
+            self.assertFalse(h.kvm_access_progress["refreshes"][1]["effective_access_before"])
+            self.assertTrue(h.kvm_access_progress["refreshes"][1]["effective_access_after"])
+            self.assertNotIn("original", json.dumps(h.kvm_access_progress))
+            self.assertNotIn("1001", json.dumps(h.kvm_access_progress))
+
+    def test_kvm_refresh_settle_failure_prevents_grant(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.run = Mock(side_effect=RuntimeError("settle failed"))
+            h._kvm_access_snapshot = Mock()
+            with self.assertRaises(RuntimeError):
+                h.refresh_kvm_access("boot")
+            h.run.assert_called_once_with(["udevadm", "settle", "--timeout=5"], timeout=6)
+            h._kvm_access_snapshot.assert_not_called()
+
+    def test_kvm_ineffective_grant_fails_and_preserves_pre_grant_identity(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            identity = (1, 2, 3, 0, 100)
+            h._kvm_access_snapshot = Mock(side_effect=[
+                (identity, b"original", False), (identity, b"changed-acl", False)])
+            def run(argv, **kwargs):
+                if argv[0] == "sudo":
+                    self.assertEqual(h.original_kvm_acl, b"original")
+                    self.assertEqual(h.kvm_identity, identity)
+            h.run = Mock(side_effect=run)
+            with self.assertRaisesRegex(RuntimeError, "grant ineffective"):
+                h.refresh_kvm_access("preflight")
+            self.assertIsNone(h.kvm_access_baseline)
+            self.assertFalse(h.kvm_access_progress["refreshes"][0]["effective_access_after"])
+
+    def test_kvm_refresh_refuses_replaced_device(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.original_kvm_acl = b"original"
+            h.kvm_identity = (1, 2, 3, 0, 100)
+            h.kvm_access_baseline = (h.kvm_identity, b"grant", True)
+            h._kvm_access_snapshot = Mock(return_value=((1, 9, 3, 0, 100), b"other", False))
+            h.run = Mock()
+            with self.assertRaisesRegex(RuntimeError, "KVM device identity"):
+                h.refresh_kvm_access("boot")
+            h.run.assert_called_once_with(["udevadm", "settle", "--timeout=5"], timeout=6)
+
+    def test_kvm_cleanup_reaps_then_settles_then_restores_original_acl(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.original_kvm_acl = b"original-private-acl"
+            h.kvm_identity = (1, 2, 3, 0, 100)
+            h._kvm_access_snapshot = Mock(return_value=(h.kvm_identity, b"grant", True))
+            events = []
+            qemu = Mock()
+            qemu.poll.return_value = None
+            qemu.terminate.side_effect = lambda: events.append("terminate")
+            def reaped(**kwargs):
+                events.append("reap")
+                qemu.poll.return_value = 0
+            qemu.wait.side_effect = reaped
+            h.qemu, h.processes = qemu, [qemu]
+            def run(argv, **kwargs):
+                events.append("settle" if argv[0] == "udevadm" else "restore")
+                if argv[0] == "sudo":
+                    self.assertEqual(kwargs["data"], b"original-private-acl")
+            h.run = Mock(side_effect=run)
+            h.cleanup()
+            self.assertEqual(events, ["terminate", "reap", "settle", "restore"])
+            self.assertTrue(h.kvm_access_progress["restored"])
+
+    def test_kvm_cleanup_restores_even_when_settle_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.original_kvm_acl = b"original"
+            h.kvm_identity = (1, 2, 3, 0, 100)
+            h._kvm_access_snapshot = Mock(return_value=(h.kvm_identity, b"grant", True))
+            h.run = Mock(side_effect=[RuntimeError("settle failed"), SimpleNamespace(returncode=0)])
+            with self.assertRaisesRegex(RuntimeError, "settle failed"):
+                h.cleanup()
+            self.assertEqual(h.run.call_args.args[0], ["sudo", "-n", "setfacl", "--restore=-"])
+            self.assertEqual(h.run.call_args.kwargs["data"], b"original")
+            self.assertTrue(h.kvm_access_progress["restored"])
+            self.assertEqual(h.kvm_access_progress["cleanup_failure"], "udev_settle")
+
+    def test_kvm_cleanup_refuses_replaced_device_or_owner(self):
+        original = (1, 2, 3, 0, 100)
+        for index in range(len(original)):
+            changed = list(original)
+            changed[index] += 1
+            with self.subTest(index=index), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                h.original_kvm_acl = b"original"
+                h.kvm_identity = original
+                h._kvm_access_snapshot = Mock(return_value=(tuple(changed), b"other", False))
+                h.run = Mock()
+                with self.assertRaisesRegex(RuntimeError, "KVM device identity"):
+                    h.cleanup()
+                h.run.assert_called_once_with(["udevadm", "settle", "--timeout=5"], timeout=6)
+                self.assertFalse(h.kvm_access_progress["restored"])
+                self.assertEqual(h.kvm_access_progress["cleanup_failure"], "device_identity")
+
+    def test_kvm_snapshot_ignores_acl_mode_bits_but_requires_character_device(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.run = Mock(return_value=SimpleNamespace(stdout=b"private-acl"))
+            info = SimpleNamespace(st_dev=1, st_ino=2, st_rdev=3, st_uid=0, st_gid=100,
+                                   st_mode=host.stat.S_IFCHR | 0o660)
+            with patch("haos.host.Path.stat", return_value=info), patch("haos.host.os.access", return_value=True):
+                first = h._kvm_access_snapshot()
+                info.st_mode = host.stat.S_IFCHR | 0o600
+                self.assertEqual(h._kvm_access_snapshot()[0], first[0])
+                info.st_mode = host.stat.S_IFREG | 0o660
+                h.original_kvm_acl, h.kvm_identity = first[1], first[0]
+                h.run.reset_mock()
+                with self.assertRaisesRegex(RuntimeError, "character device"):
+                    h.cleanup()
+                h.run.assert_called_once_with(["udevadm", "settle", "--timeout=5"], timeout=6)
+                self.assertEqual(h.kvm_access_progress["cleanup_failure"], "device_identity")
+
+    def test_kvm_refresh_immediately_precedes_initial_and_cold_boot(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            events = []
+            h.disk_guard = Mock()
+            h.refresh_kvm_access = Mock(side_effect=lambda phase: events.append("refresh"))
+            qemu = Mock(poll=Mock(return_value=0))
+            def start(argv, **kwargs):
+                self.assertEqual(argv[0], "qemu-system-x86_64")
+                self.assertIn("q35,accel=kvm", argv)
+                self.assertNotIn("sudo", argv)
+                events.append("start")
+                return qemu
+            h.start = Mock(side_effect=start)
+            h._wait_boot = Mock(return_value={})
+            h._capture_boot_signals = Mock()
+            with contextlib.redirect_stdout(io.StringIO()):
+                h.boot()
+                h.boot()
+            self.assertEqual(events, ["refresh", "start", "refresh", "start"])
+
     def test_exited_qemu_fails_immediately_instead_of_waiting_for_ssh(self):
         with tempfile.TemporaryDirectory() as d:
             h = host.Host(d)
             h.disk_guard = Mock()
+            h.refresh_kvm_access = Mock()
             h.start = Mock(return_value=Mock(poll=Mock(return_value=1)))
             h.ssh = Mock()
             # One predicate call is enough to detect a dead QEMU process.
@@ -213,6 +370,7 @@ class HostTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             h = host.Host(d)
             h.disk_guard = Mock()
+            h.refresh_kvm_access = Mock()
             h.start = Mock(return_value=Mock(poll=Mock(return_value=None)))
             visited = []
             def ssh(command, **kwargs):
@@ -387,9 +545,21 @@ class HostTests(unittest.TestCase):
                 host.Host(d).preflight()
             opened.assert_not_called()
 
+    def test_root_runner_is_refused_before_acl_or_qemu(self):
+        with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+                patch("haos.host.platform.machine", return_value="x86_64"), \
+                patch("haos.host.os.getuid", return_value=0):
+            h = host.Host(d)
+            h.refresh_kvm_access = Mock()
+            with self.assertRaisesRegex(RuntimeError, "unprivileged runner"):
+                h.preflight()
+            h.refresh_kvm_access.assert_not_called()
+
     def test_missing_kvm_is_failure(self):
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
             with patch("haos.host.platform.machine", return_value="x86_64"), \
+                    patch.object(host.Host, "refresh_kvm_access"), \
+                    patch("haos.host.os.getuid", return_value=1001), \
                     patch("builtins.open", side_effect=PermissionError), \
                     self.assertRaises(PermissionError):
                 host.Host(d).preflight()
@@ -397,6 +567,8 @@ class HostTests(unittest.TestCase):
     def test_kvm_create_vm_required_before_physical_disk_check(self):
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
             with patch("haos.host.platform.machine", return_value="x86_64"), \
+                    patch.object(host.Host, "refresh_kvm_access") as refresh, \
+                    patch("haos.host.os.getuid", return_value=1001), \
                     patch("builtins.open", mock_open()), \
                     patch("haos.host.fcntl.ioctl", side_effect=[12, 999]) as ioctl, \
                     patch("haos.host.os.close") as close, \
@@ -405,10 +577,13 @@ class HostTests(unittest.TestCase):
                 host.Host(d).preflight()
             self.assertEqual([call.args[1] for call in ioctl.call_args_list], [0xAE00, 0xAE01])
             close.assert_called_once_with(999)
+            refresh.assert_called_once_with("preflight")
 
     def test_create_vm_ioctl_failure_is_not_skipped(self):
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}):
             with patch("haos.host.platform.machine", return_value="x86_64"), \
+                    patch.object(host.Host, "refresh_kvm_access"), \
+                    patch("haos.host.os.getuid", return_value=1001), \
                     patch("builtins.open", mock_open()), \
                     patch("haos.host.fcntl.ioctl", side_effect=[12, OSError("KVM unavailable")]), \
                     self.assertRaises(OSError):
@@ -483,7 +658,9 @@ class AcceptanceTests(unittest.TestCase):
         upload = [s for s in steps if s.get("uses", "").startswith("actions/upload-artifact@")]
         self.assertEqual(len(upload), 1)
         self.assertEqual(upload[0]["with"]["path"], "$" + "{{ runner.temp }}/haos-report/haos-acceptance.json")
-        self.assertIn('sudo setfacl -m "u:$(id -un):rw" /dev/kvm', path.read_text())
+        # The harness owns the original ACL snapshot and lifecycle; setup must
+        # not grant access before it can save the runner's unmodified ACL.
+        self.assertNotIn("setfacl", path.read_text())
 
     def test_workflow_report_directory_uses_runner_only_in_step_context(self):
         path = Path(__file__).resolve().parents[2] / ".github/workflows/test-haos-addon.yml"

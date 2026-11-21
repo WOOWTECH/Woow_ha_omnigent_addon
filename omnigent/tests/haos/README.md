@@ -13,8 +13,14 @@ It uses the checksum-pinned official HAOS 18.1 OVA qcow2, OVMF, virtio and KVM.
 A new key, CONFIG drive and writable disk are created for each job. Supervisor
 and Core follow HAOS's normal first-boot installation. No prior guest is reused.
 
-The job grants only its current user access to `/dev/kvm`, then requires both
-`KVM_GET_API_VERSION` and `KVM_CREATE_VM` to work. There is no software CPU
+The harness saves the original `/dev/kvm` ACL and device identity before granting
+only its current UID read/write access, then requires both `KVM_GET_API_VERSION`
+and `KVM_CREATE_VM` to work. QEMU runs as the unprivileged runner. Before every
+actual QEMU launch, including cold boot, it drains pending udev events with a
+five-second settle bound and refreshes that UID's ACL. Each refresh verifies the
+same character device and effective access; its final grant becomes the access
+comparison baseline. Raw ACLs and numeric user/group identities stay private.
+There is no software CPU
 fallback. GitHub does not guarantee nested virtualization on hosted runners;
 an unavailable accelerator is a failed acceptance prerequisite.
 
@@ -105,7 +111,13 @@ allowlisted system state. These diagnostics are captured before cleanup; raw
 commands, response bodies, IP addresses, tokens and QEMU/SSH output stay private.
 An exited QEMU process fails immediately instead of consuming the SSH timeout.
 Cleanup terminates the harness's processes and verifies the registry ownership
-label before deleting it and its anonymous volume. Job teardown removes the
+label before deleting it and its anonymous volume. After QEMU is reaped, cleanup
+settles pending udev events and restores the one original ACL only if the original
+character device, inode, device numbers, owner and group still match. ACL-related
+mode changes are excluded from identity. A mismatch skips the ACL write and fails
+cleanup; a failed settle still attempts restoration on the verified original
+device and remains a failure. The receipt contains only access/ACL-change booleans
+and fixed cleanup status codes. Job teardown removes the
 ephemeral runner and remaining Docker images.
 
 ## Limits
@@ -119,7 +131,7 @@ log lines in the manual H3 checklist. These remain separate acceptance evidence.
 
 ## Local harness validation
 
-Install `requirements.txt`, nginx and OpenSSL, then run from the repository root:
+Install `requirements.txt`, nginx, jq and OpenSSL, then run from the repository root:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=omnigent/tests \
