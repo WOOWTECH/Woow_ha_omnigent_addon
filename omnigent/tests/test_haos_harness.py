@@ -1528,6 +1528,10 @@ class BrowserTests(unittest.TestCase):
     def test_configured_ha_ports_support_discovery_and_real_browser(self):
         from playwright.sync_api import sync_playwright
         class Handler(BaseHTTPRequestHandler):
+            # Keep responses alive until HTTPX/Chromium close their connections.
+            # HTTP/1.0 server-first close leaves TIME_WAIT on the HA forward and
+            # prevents the immediately following acceptance preflight from binding.
+            protocol_version = "HTTP/1.1"
             def do_GET(self):
                 body = b"[]" if self.path == "/api/onboarding" else b"<!doctype html><title>fixture</title>"
                 self.send_response(200)
@@ -1563,6 +1567,10 @@ class BrowserTests(unittest.TestCase):
                     server.shutdown()
                     server.server_close()
                     thread.join(timeout=5)
+                # The next CI step performs this exclusive bind. Fixture teardown
+                # must leave the actual forwarded ports reusable immediately.
+                with socket.socket() as probe:
+                    probe.bind(("127.0.0.1", port))
 
     def test_real_browser_records_ambiguous_input_and_closes(self):
         from playwright.sync_api import Error
