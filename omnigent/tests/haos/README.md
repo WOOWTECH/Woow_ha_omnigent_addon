@@ -92,6 +92,11 @@ Supervisor pulls the unchanged old/new images from a job-owned loopback registry
 through a temporary SSH reverse forward. Only the disposable local add-on config's
 `image` reference changes. Both versions use `local_woow-omnigent`, preserving
 Supervisor's real data directory across the update.
+The local config is written under Supervisor's existing `apps/local` directory,
+as defined by [Supervisor 2026.11.0](https://github.com/home-assistant/supervisor/blob/2026.11.0/supervisor/config.py).
+After store reload, acceptance requires the exact local slug, repository and
+version in the catalog before install/update. It fails if the local root is absent
+or the catalog differs; it does not create an alternate legacy directory.
 
 ## Checks and receipt
 
@@ -139,6 +144,14 @@ guest shell. A stopped CLI or absent/empty token remains retryable during startu
 missing executables and jq usage/compile errors fail immediately. Health and root
 state still require successful authenticated HTTP responses from both endpoints.
 An exited QEMU process fails immediately instead of consuming the SSH timeout.
+Later Supervisor operations retain the last fixed operation label, method,
+SSH exit/timeout, HTTP status and `ok`/`error`/unknown result. The two recognized
+upstream error keys are `store_app_not_found_error` and `system_not_ready_error`;
+all other failures use fixed HTTP/transport/response-shape categories. Error text,
+extra fields, backup IDs and request/response bodies are excluded. Response JSON
+classification is limited to 1 MiB. Local config diagnostics distinguish writing,
+store reload and catalog discovery. These checks apply to install/update and the
+existing backup/restore operations without weakening their success conditions.
 Registry diagnostics distinguish the pinned image pull, container launch/state,
 host HTTP readiness, guest forwarding, baseline/candidate tag/push/inspect,
 metadata parsing, architecture/version checks and final producer/source guards.

@@ -62,6 +62,8 @@ class Acceptance:
         self.evidence["boot_progress"] = self.host.boot_progress
         self.evidence["kvm_access"] = self.host.kvm_access_progress
         self.evidence["registry_progress"] = self.host.registry_progress
+        self.evidence["install_progress"] = self.host.install_progress
+        self.evidence["supervisor_operation"] = self.host.supervisor_progress
         self.phase = "initialization"
         self.username = "haos-ci-admin"
         self.password = secrets.token_urlsafe(24)

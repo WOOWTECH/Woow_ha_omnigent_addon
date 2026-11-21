@@ -178,6 +178,8 @@ class Host:
         self.registry_created = False
         self.registry_progress = {"launch_attempted": False, "container_created": False,
                                   "container_running": None}
+        self.install_progress = {}
+        self.supervisor_progress = {}
         self.image_identities = {}
         self.guard_stop = threading.Event()
         self.disk_exhausted = False
@@ -213,6 +215,25 @@ class Host:
     def supervisor(self, method, path, body=None, timeout=300):
         require(method in ("GET", "POST", "DELETE") and re.fullmatch(r"/[a-zA-Z0-9_./-]+", path),
                 "invalid Supervisor request")
+        # Fixed labels only: backup IDs, request bodies and error text stay private.
+        operations = {
+            "/store/reload": "store_reload",
+            "/store/addons/local_woow-omnigent": "store_catalog",
+            "/backups/new/partial": "backup_create",
+        }
+        for action in ("install", "update"):
+            operations["/store/addons/local_woow-omnigent/" + action] = "store_" + action
+        for action in ("options", "start", "restart", "info"):
+            operations["/addons/local_woow-omnigent/" + action] = "addon_" + action
+        operation = operations.get(path, "other")
+        if re.fullmatch(r"/backups/[a-zA-Z0-9_-]+/info", path):
+            operation = "backup_info"
+        elif re.fullmatch(r"/backups/[a-zA-Z0-9_-]+/restore/partial", path):
+            operation = "backup_restore"
+        progress = self.supervisor_progress
+        progress.clear()
+        progress.update(operation=operation, method=method, ssh_exit=None, timeout=False,
+                        http_status=None, result="unknown", error_code="pending")
         # Root developer access belongs solely to this newly created guest.
         # Supervisor injects SUPERVISOR_TOKEN into the CLI container environment.
         # Read only that runtime value; it never leaves the guest shell.
@@ -222,14 +243,47 @@ token=$(docker exec hassio_cli printenv SUPERVISOR_TOKEN)
 test -n "$token"
 address=$(docker inspect hassio_supervisor | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.IPAddress')
 test -n "$address"
-curl --silent --show-error --fail --max-time """ + str(timeout - 10) + r""" \
+curl --silent --show-error --write-out '\n%{http_code}' --max-time """ + str(timeout - 10) + r""" \
  -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \
  -X """ + method + (" --data-binary @- " if body is not None else " ") + \
             '"http://$address' + path + '"'
-        r = self.ssh(command, data=json.dumps(body).encode() if body is not None else None,
-                     timeout=timeout)
-        result = json.loads(r.stdout)
-        require(result.get("result") == "ok", "Supervisor rejected operation")
+        try:
+            r = self.ssh(command, data=json.dumps(body).encode() if body is not None else None,
+                         timeout=timeout, check=False)
+        except subprocess.TimeoutExpired:
+            progress.update(timeout=True, error_code="timeout")
+            raise
+        progress["ssh_exit"] = r.returncode
+        raw, _, status = r.stdout.rstrip(b"\r\n").rpartition(b"\n")
+        if re.fullmatch(rb"[1-5][0-9]{2}", status):
+            progress["http_status"] = int(status)
+        if r.returncode:
+            progress["error_code"] = "transport_error"
+            raise RuntimeError("Supervisor transport failed")
+        if progress["http_status"] is None:
+            progress["error_code"] = "invalid_http_status"
+            raise RuntimeError("Supervisor HTTP status missing")
+        if len(raw) > 1024 * 1024:
+            progress["error_code"] = "response_too_large"
+            raise RuntimeError("Supervisor response exceeds metadata limit")
+        try:
+            result = json.loads(raw)
+        except (ValueError, UnicodeError):
+            progress["error_code"] = "invalid_json"
+            raise RuntimeError("Supervisor response is not JSON") from None
+        if not isinstance(result, dict):
+            progress["error_code"] = "invalid_json"
+            raise RuntimeError("Supervisor response is not an object")
+        outcome = result.get("result")
+        progress["result"] = outcome if outcome in ("ok", "error") else "unknown"
+        if progress["http_status"] == 200 and outcome == "ok":
+            progress["error_code"] = "none"
+        else:
+            key = result.get("error_key")
+            progress["error_code"] = (key if key in ("store_app_not_found_error", "system_not_ready_error")
+                else {401: "unauthorized", 403: "forbidden", 404: "not_found"}.get(
+                    progress["http_status"], "api_error" if outcome == "error" else "invalid_result"))
+            raise RuntimeError("Supervisor rejected operation")
         return result.get("data", {})
 
     def preflight(self):
@@ -704,11 +758,21 @@ rc=$?; probe curl_exit "$rc"; exit "$rc"
         import yaml
         require(config["slug"] == "woow-omnigent", "unexpected add-on slug")
         config = dict(config, image="127.0.0.1:15000/omnigent-acceptance")
+        self.install_progress.update(stage="write_local_config")
         # Local and store installs have different slugs. Both sides use local.
-        self.ssh("mkdir -p /mnt/data/supervisor/addons/local/woow-omnigent && "
-                 "cat > /mnt/data/supervisor/addons/local/woow-omnigent/config.yaml",
+        # Supervisor 2026.11.0 config.APPS_LOCAL is apps/local. Require its
+        # existing root so a renamed or unexpected layout cannot be invented.
+        self.ssh("test -d /mnt/data/supervisor/apps/local && "
+                 "mkdir -p /mnt/data/supervisor/apps/local/woow-omnigent && "
+                 "cat > /mnt/data/supervisor/apps/local/woow-omnigent/config.yaml",
                  data=yaml.safe_dump(config).encode())
+        self.install_progress["stage"] = "store_reload"
         self.supervisor("POST", "/store/reload", {})
+        self.install_progress["stage"] = "catalog_lookup"
+        entry = self.supervisor("GET", "/store/addons/local_woow-omnigent")
+        require(entry.get("slug") == "local_woow-omnigent" and entry.get("repository") == "local"
+                and entry.get("version_latest") == config["version"], "local app catalog mismatch")
+        self.install_progress["stage"] = "catalog_verified"
 
     def verify_guest_image(self, expected_id):
         proof = self.image_identities.get(expected_id)

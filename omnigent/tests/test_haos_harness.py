@@ -1016,11 +1016,123 @@ class HostTests(unittest.TestCase):
     def test_supervisor_secret_body_is_stdin_only(self):
         with tempfile.TemporaryDirectory() as d:
             h = host.Host(d)
-            h.ssh = Mock(return_value=SimpleNamespace(stdout=b'{"result":"ok","data":{}}'))
+            h.ssh = Mock(return_value=SimpleNamespace(returncode=0, stdout=b'{"result":"ok","data":{}}\n200'))
             h.supervisor("POST", "/addons/local_woow-omnigent/options", {"password": "synthetic-secret"})
             call = h.ssh.call_args
             self.assertNotIn("synthetic-secret", call.args[0])
             self.assertIn(b"synthetic-secret", call.kwargs["data"])
+
+    def test_install_config_is_discovered_in_current_supervisor_local_apps(self):
+        # Supervisor 2026.11.0 config.APPS_LOCAL and StoreData.update use apps/local.
+        for version in ("0.1.23", "0.1.24"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                local = root / "apps/local"
+                local.mkdir(parents=True)
+                h = host.Host(root)
+                config = {"slug": "woow-omnigent", "version": version,
+                          "image": "original-image", "options": {"fixture": "unchanged"}}
+                original = copy.deepcopy(config)
+                def ssh(command, **kwargs):
+                    command = command.replace("/mnt/data/supervisor", str(root))
+                    result = host.subprocess.run(["/bin/sh", "-c", command],
+                        input=kwargs.get("data"), capture_output=True, timeout=5)
+                    host.require(result.returncode == 0, "fixture write failed")
+                    return result
+                def supervisor(method, path, body=None):
+                    if path == "/store/reload":
+                        self.assertTrue((local / "woow-omnigent/config.yaml").is_file())
+                        return {}
+                    self.assertEqual((method, path), ("GET", "/store/addons/local_woow-omnigent"))
+                    return {"slug": "local_woow-omnigent", "repository": "local", "version_latest": version}
+                h.ssh, h.supervisor = Mock(side_effect=ssh), Mock(side_effect=supervisor)
+                h.install_config(config)
+                written = yaml.safe_load((local / "woow-omnigent/config.yaml").read_text())
+                self.assertEqual(written, dict(original, image="127.0.0.1:15000/omnigent-acceptance"))
+                self.assertEqual(config, original)
+                self.assertEqual(h.supervisor.call_count, 2)
+                self.assertEqual(h.install_progress["stage"], "catalog_verified")
+                self.assertFalse((root / "addons").exists())
+
+    def test_install_config_requires_existing_root_and_exact_catalog_entry(self):
+        config = {"slug": "woow-omnigent", "version": "0.1.23"}
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            def ssh(command, **kwargs):
+                result = host.subprocess.run(["/bin/sh", "-c", command.replace(
+                    "/mnt/data/supervisor", d)], input=kwargs.get("data"), capture_output=True, timeout=5)
+                host.require(result.returncode == 0, "missing local root")
+            h.ssh, h.supervisor = ssh, Mock()
+            with self.assertRaises(RuntimeError):
+                h.install_config(config)
+            h.supervisor.assert_not_called()
+            self.assertFalse((Path(d) / "apps").exists())
+        entry = {"slug": "local_woow-omnigent", "repository": "local", "version_latest": "0.1.23"}
+        for field in entry:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                h.ssh = Mock()
+                h.supervisor = Mock(side_effect=[{}, dict(entry, **{field: "wrong"})])
+                with self.assertRaisesRegex(RuntimeError, "catalog"):
+                    h.install_config(config)
+                self.assertEqual(h.install_progress["stage"], "catalog_lookup")
+
+    def test_supervisor_operations_record_only_fixed_status_and_error_codes(self):
+        cases = [
+            (200, {"result": "ok", "data": {}}, 0, "none"),
+            (404, {"result": "error", "error_key": "store_app_not_found_error"}, 0, "store_app_not_found_error"),
+            (503, {"result": "error", "error_key": "system_not_ready_error"}, 0, "system_not_ready_error"),
+            (403, {"result": "error", "error_key": "PRIVATE_ERROR"}, 0, "forbidden"),
+            (400, {"result": "error", "message": "PRIVATE_ERROR"}, 0, "api_error"),
+            (200, {"result": "PRIVATE_ERROR"}, 0, "invalid_result"),
+            (0, {}, 7, "transport_error"),
+        ]
+        for status, response, code, expected in cases:
+            with self.subTest(status=status, expected=expected), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                response["private"] = "PRIVATE_SECRET"
+                raw = json.dumps(response).encode() + f"\n{status:03}".encode()
+                h.ssh = Mock(return_value=SimpleNamespace(returncode=code, stdout=raw))
+                if expected == "none":
+                    h.supervisor("POST", "/store/addons/local_woow-omnigent/install", {})
+                else:
+                    with self.assertRaises(RuntimeError):
+                        h.supervisor("POST", "/store/addons/local_woow-omnigent/install", {})
+                progress = h.supervisor_progress
+                self.assertEqual(progress["operation"], "store_install")
+                self.assertEqual(progress["http_status"], status or None)
+                self.assertEqual(progress["ssh_exit"], code)
+                self.assertEqual(progress["error_code"], expected)
+                self.assertNotIn("PRIVATE", json.dumps(progress))
+                self.assertFalse(h.ssh.call_args.kwargs["check"])
+
+    def test_supervisor_operation_timeout_and_non_json_do_not_leak_response(self):
+        for timeout in (True, False):
+            with self.subTest(timeout=timeout), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                if timeout:
+                    h.ssh = Mock(side_effect=host.subprocess.TimeoutExpired("PRIVATE_COMMAND", 30,
+                        output=b"PRIVATE_OUTPUT", stderr=b"PRIVATE_ERROR"))
+                else:
+                    h.ssh = Mock(return_value=SimpleNamespace(returncode=0, stdout=b"PRIVATE_BODY\n500"))
+                with self.assertRaises((RuntimeError, host.subprocess.TimeoutExpired)):
+                    h.supervisor("GET", "/backups/private_slug/info", timeout=30)
+                self.assertEqual(h.supervisor_progress["operation"], "backup_info")
+                self.assertEqual(h.supervisor_progress["error_code"], "timeout" if timeout else "invalid_json")
+                self.assertNotIn("private", json.dumps(h.supervisor_progress).lower())
+
+    def test_supervisor_operation_bounds_metadata_and_unknown_operation_labels(self):
+        for raw, code in ((b'{"result":"ok"}', "invalid_http_status"),
+                          (b"x" * (1024 * 1024 + 1) + b"\n200", "response_too_large"),
+                          (b"[]\n200", "invalid_json")):
+            with self.subTest(code=code), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                h.ssh = Mock(return_value=SimpleNamespace(returncode=0, stdout=raw))
+                with self.assertRaises(RuntimeError):
+                    h.supervisor("GET", "/private_path")
+                self.assertEqual(h.supervisor_progress["operation"], "other")
+                self.assertEqual(h.supervisor_progress["error_code"], code)
+                self.assertNotIn("private", json.dumps(h.supervisor_progress).lower())
 
     def test_supervisor_path_injection_refused(self):
         with tempfile.TemporaryDirectory() as d, self.assertRaises(RuntimeError):
