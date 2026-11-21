@@ -56,9 +56,31 @@ image artifact. Acceptance requires:
 3. The producer's `omnigent` Git tree to equal the PR-head tree. A merge checkout
    with different add-on content fails; no exact-commit equivalence is claimed.
 4. Matching config, Dockerfile and artifact-pin hashes, plus the producer's
-   recorded Docker image ID.
-5. The actual Supervisor container to run that image ID, with the installed wheel
-   verified against the reviewed core source and wheel receipt inside the guest.
+   recorded Docker image ID cryptographically linked to the saved image config.
+   Docker's [containerd store reports a manifest ID](https://github.com/moby/moby/blob/master/daemon/containerd/image_inspect.go),
+   while its legacy store reports a config ID. Before loading the verified tar,
+   acceptance hashes its config bytes. A differing producer ID must equal the
+   archive's single image manifest descriptor, whose bytes, digest, size and
+   config reference are verified. Only that linked manifest or config digest is
+   accepted for the loaded image; labels/version alone never establish identity.
+   Duplicate members, unexpected tags, altered descriptors and unlinked IDs fail.
+5. After each local registry push, hash the served manifest bytes against its
+   `Docker-Content-Digest` header and verify its config descriptor and config blob
+   against the anchored config digest. A push may rewrite the manifest, so the
+   pushed digest is measured independently of the producer digest. The candidate
+   anchor comes from its verified CI archive. The baseline anchor comes from an
+   export of the image pulled by its fixed digest; this temporary tar is deleted
+   immediately after verification. The actual Supervisor container must report
+   either that config digest or that verified pushed manifest digest. Both versions
+   use this check at install, before/after cold backup, restore and cold boot,
+   with the installed candidate wheel also verified inside the guest.
+
+Fresh [HAOS 18.1 enables the containerd image store](https://github.com/home-assistant/operating-system/blob/18.1/buildroot-external/rootfs-overlay/usr/libexec/docker-prepare).
+Its container image ID can therefore differ from the runner's config ID. The
+receipt records the independently verified registry/config digests for each
+version; an unrelated ID or missing registry proof always fails. Registry metadata
+requests stay on the job's loopback listener, disable redirects and environment
+proxies, have a ten-second timeout, and read at most 1 MiB per object.
 
 The source receipt is `haos-image-source-attempt-<attempt>`. The image remains
 the Store-compatible `upgrade-comparison-image-woow-omnigent-attempt-<attempt>`;

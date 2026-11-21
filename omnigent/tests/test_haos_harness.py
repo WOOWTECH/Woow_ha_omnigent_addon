@@ -3,6 +3,7 @@ import contextlib
 import copy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,16 @@ from haos import acceptance, host, provenance
 
 HEAD = "a" * 40
 TREE = "b" * 40
+
+
+def registry_fixture(version="0.1.24", *, revision="pushed"):
+    config = json.dumps({"architecture": "amd64", "os": "linux", "config": {"Labels": {
+        "io.hass.version": version}}}).encode()
+    config_id = "sha256:" + hashlib.sha256(config).hexdigest()
+    manifest = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {"digest": config_id, "size": len(config), "mediaType": "application/vnd.oci.image.config.v1+json"},
+        "layers": [], "annotations": {"fixture": revision}}).encode()
+    return config, config_id, manifest, "sha256:" + hashlib.sha256(manifest).hexdigest()
 
 
 class ArtifactTests(unittest.TestCase):
@@ -143,7 +154,154 @@ class BindingTests(unittest.TestCase):
             self.validate()
 
 
+class ArchiveIdentityTests(unittest.TestCase):
+    def archive(self, directory, *, config_data=None, config_reference=None, tag=host.IMAGE_TAG,
+                duplicate=False, bad_manifest_hash=False, bad_descriptor_size=False):
+        config = config_data or b'{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}'
+        config_id = "sha256:" + hashlib.sha256(config).hexdigest()
+        config_name = "blobs/sha256/" + config_id[7:]
+        manifest = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+            "config": {"mediaType": "application/vnd.oci.image.config.v1+json",
+                       "digest": config_reference or config_id, "size": len(config)}, "layers": []}).encode()
+        manifest_id = "sha256:" + hashlib.sha256(manifest).hexdigest()
+        files = {"manifest.json": json.dumps([{"Config": config_name, "RepoTags": [tag], "Layers": []}]).encode(),
+                 config_name: config,
+                 "blobs/sha256/" + manifest_id[7:]: manifest + (b" " if bad_manifest_hash else b""),
+                 "index.json": json.dumps({"schemaVersion": 2, "manifests": [{"digest": manifest_id,
+                     "size": len(manifest) + int(bad_descriptor_size),
+                     "mediaType": "application/vnd.oci.image.manifest.v1+json"}]}).encode()}
+        target = Path(directory) / "candidate.tar"
+        with tarfile.open(target, "w") as t:
+            for name, data in list(files.items()) + ([('manifest.json', files['manifest.json'])] if duplicate else []):
+                info = tarfile.TarInfo(name)
+                info.size = len(data)
+                t.addfile(info, io.BytesIO(data))
+        return target, config_id, manifest_id
+
+    def test_manifest_producer_and_config_consumer_are_cryptographically_linked(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, config_id, manifest_id = self.archive(d)
+            self.assertNotEqual(config_id, manifest_id)
+            identity = provenance.archive_identity(path, manifest_id)
+            self.assertEqual(identity, {"config_digest": config_id, "producer_image_id": manifest_id,
+                                        "producer_id_kind": "manifest"})
+
+    def test_legacy_config_producer_identity(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, config_id, _ = self.archive(d)
+            self.assertEqual(provenance.archive_identity(path, config_id)["producer_id_kind"], "config")
+
+    def test_unknown_producer_id_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, _, _ = self.archive(d)
+            with self.assertRaises(RuntimeError):
+                provenance.archive_identity(path, "sha256:" + "0" * 64)
+
+    def test_changed_config_reference_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            path, _, manifest_id = self.archive(d, config_reference="sha256:" + "0" * 64)
+            with self.assertRaises(RuntimeError):
+                provenance.archive_identity(path, manifest_id)
+
+    def test_corrupt_manifest_duplicate_member_and_wrong_tag_rejected(self):
+        for change in ({"bad_manifest_hash": True}, {"duplicate": True}, {"tag": "other:new"},
+                       {"bad_descriptor_size": True}):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as d:
+                path, _, manifest_id = self.archive(d, **change)
+                with self.assertRaises(RuntimeError):
+                    provenance.archive_identity(path, manifest_id)
+
+
 class HostTests(unittest.TestCase):
+    def test_baseline_anchor_exports_only_pulled_immutable_image_and_deletes_tar(self):
+        for mismatch in (False, True):
+            with self.subTest(mismatch=mismatch), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                tag = "haos-acceptance-baseline:0.1.23"
+                fixture, config_id, _ = ArchiveIdentityTests().archive(d, tag=tag)
+                def command(argv, **kwargs):
+                    if argv[:3] == ["docker", "image", "inspect"]:
+                        self.assertEqual(argv[-1], host.BASELINE_IMAGE)
+                        value = "sha256:" + "0"*64 if mismatch else config_id
+                        return SimpleNamespace(returncode=0, stdout=value.encode(), stderr=b"")
+                    if argv[1] == "tag":
+                        self.assertEqual(argv, ["docker", "tag", host.BASELINE_IMAGE, tag])
+                    if argv[1] == "save":
+                        self.assertEqual(argv[-1], tag)
+                        Path(argv[3]).write_bytes(fixture.read_bytes())
+                    return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+                h.run = Mock(side_effect=command)
+                if mismatch:
+                    with self.assertRaises(RuntimeError):
+                        h.baseline_identity()
+                else:
+                    self.assertEqual(h.baseline_identity()["config_digest"], config_id)
+                self.assertFalse((Path(d) / "baseline-image.tar").exists())
+
+    def test_registry_metadata_is_bounded_loopback_only_and_does_not_redirect(self):
+        for status, body in ((200, b"{}"), (302, b""), (200, b"x"*(1024*1024+1))):
+            with self.subTest(status=status, size=len(body)), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                def respond(request):
+                    self.assertEqual(str(request.url), "http://127.0.0.1:15000/v2/omnigent-acceptance/manifests/0.1.24")
+                    return httpx.Response(status, content=body, headers={
+                        "Docker-Content-Digest": "sha256:" + "d"*64, "Location": "https://invalid.example"})
+                with httpx.Client(transport=httpx.MockTransport(respond), trust_env=False) as client:
+                    def stream(method, url, **kwargs):
+                        self.assertFalse(kwargs.pop("trust_env"))
+                        self.assertFalse(kwargs["follow_redirects"])
+                        return client.stream(method, url, **kwargs)
+                    with patch("haos.host.httpx.stream", side_effect=stream):
+                        if status == 200 and len(body) <= 1024*1024:
+                            self.assertEqual(h._registry_metadata("manifests/0.1.24")[0], body)
+                        else:
+                            with self.assertRaises(RuntimeError):
+                                h._registry_metadata("manifests/0.1.24")
+                self.assertNotIn("invalid.example", json.dumps(h.registry_progress))
+                with self.assertRaises(RuntimeError):
+                    h._registry_metadata("https://invalid.example/private")
+
+    def test_pushed_manifest_binding_handles_host_config_guest_manifest_for_both_versions(self):
+        for version in ("0.1.23", "0.1.24"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                config, config_id, manifest, pushed_id = registry_fixture(version)
+                _, _, _, producer_id = registry_fixture(version, revision="producer")
+                self.assertNotEqual(producer_id, pushed_id)
+                anchor = {"config_digest": config_id, "producer_image_id": producer_id}
+                image = {"Id": config_id, "Architecture": "amd64", "Config": {
+                    "Labels": {"io.hass.version": version}}}
+                h.run = Mock(side_effect=[SimpleNamespace(returncode=0, stdout=b"", stderr=b"")]*2 + [
+                    SimpleNamespace(returncode=0, stdout=json.dumps([image]).encode(), stderr=b"")])
+                h._registry_metadata = Mock(side_effect=[(manifest, pushed_id), (config, config_id)])
+                source = host.BASELINE_IMAGE if version == "0.1.23" else host.IMAGE_TAG
+                h.publish_local(source, version, identity=anchor)
+                for guest_id in (pushed_id, config_id):
+                    h.ssh = Mock(return_value=SimpleNamespace(stdout=json.dumps([
+                        {"Image": guest_id, "Name": "/app_local_woow-omnigent"}]).encode()))
+                    self.assertEqual(h.verify_guest_image(config_id), "app_local_woow-omnigent")
+                for wrong in (producer_id, "sha256:" + "f" * 64):
+                    h.ssh.return_value.stdout = json.dumps([
+                        {"Image": wrong, "Name": "/app_local_woow-omnigent"}]).encode()
+                    with self.assertRaises(RuntimeError):
+                        h.verify_guest_image(config_id)
+
+    def test_guest_identity_without_registry_proof_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.ssh = Mock(return_value=SimpleNamespace(stdout=b'[{"Image":"same","Name":"/app_local_woow-omnigent"}]'))
+            with self.assertRaises(RuntimeError):
+                h.verify_guest_image("same")
+
+    def test_registry_manifest_wrong_hash_config_and_anchor_rejected(self):
+        config, config_id, manifest, pushed_id = registry_fixture()
+        for raw, digest, blob, expected in ((manifest+b" ", pushed_id, config, config_id),
+                (manifest, "sha256:"+"0"*64, config, config_id),
+                (manifest, pushed_id, config+b" ", config_id),
+                (manifest, pushed_id, config, "sha256:"+"0"*64)):
+            with self.subTest(digest=digest, expected=expected), self.assertRaises(RuntimeError):
+                provenance.registry_identity(raw, digest, blob, expected)
+
     def test_registry_failure_retains_command_exit_without_raw_output(self):
         with tempfile.TemporaryDirectory() as d:
             h = host.Host(d)
@@ -168,7 +326,7 @@ class HostTests(unittest.TestCase):
             h.run = Mock(side_effect=[SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
                 host.subprocess.TimeoutExpired(["docker", "synthetic-secret"], 240)])
             with self.assertRaises(host.subprocess.TimeoutExpired):
-                h.publish_local(host.IMAGE_TAG, "0.1.24")
+                h.publish_local(host.IMAGE_TAG, "0.1.24", identity={"config_digest": "sha256:" + "c"*64, "producer_image_id": "sha256:" + "c"*64})
             self.assertEqual(h.registry_progress["stage"], "candidate_push")
             self.assertEqual(h.registry_progress["commands"][-1], {
                 "stage": "candidate_push", "exit": None, "timeout": True, "error_codes": []})
@@ -195,7 +353,7 @@ class HostTests(unittest.TestCase):
             h.run = Mock(side_effect=[SimpleNamespace(returncode=0, stdout=b"", stderr=b"")]*2 + [
                 SimpleNamespace(returncode=0, stdout=json.dumps([image]).encode(), stderr=b"")])
             with self.assertRaisesRegex(RuntimeError, "wrong add-on version"):
-                h.publish_local(host.BASELINE_IMAGE, "0.1.23")
+                h.publish_local(host.BASELINE_IMAGE, "0.1.23", identity={"config_digest": "sha256:" + "c"*64, "producer_image_id": "sha256:" + "c"*64})
             self.assertEqual(h.registry_progress["stage"], "baseline_version")
             self.assertTrue(all(c["exit"] == 0 for c in h.registry_progress["commands"]))
 
@@ -268,7 +426,7 @@ class HostTests(unittest.TestCase):
                 h.run = Mock(side_effect=[SimpleNamespace(returncode=0, stdout=b"", stderr=b"")]*2 + [
                     SimpleNamespace(returncode=0, stdout=payload, stderr=b"")])
                 with self.assertRaises((ValueError, RuntimeError)):
-                    h.publish_local(host.IMAGE_TAG, "0.1.24")
+                    h.publish_local(host.IMAGE_TAG, "0.1.24", identity={"config_digest": "sha256:" + "c"*64, "producer_image_id": "sha256:" + "c"*64})
                 self.assertEqual(h.registry_progress["stage"], stage)
                 self.assertFalse(h.registry_progress["states"][stage])
 
@@ -870,10 +1028,78 @@ class HostTests(unittest.TestCase):
 
 
 class AcceptanceTests(unittest.TestCase):
+    def test_install_uses_bound_guest_manifest_for_baseline_and_candidate(self):
+        for baseline in (True, False):
+            with self.subTest(baseline=baseline), tempfile.TemporaryDirectory() as d:
+                version = "0.1.23" if baseline else "0.1.24"
+                config, config_id, manifest, pushed_id = registry_fixture(version)
+                suite = acceptance.Acceptance.__new__(acceptance.Acceptance)
+                h = suite.host = host.Host(d)
+                h.image_identities[config_id] = provenance.registry_identity(manifest, pushed_id, config, config_id)
+                suite.old_image = suite.new_image = {"Id": config_id}
+                suite.old_config = {"version": "0.1.23", "options": {}}
+                suite.config = {"version": "0.1.24", "options": {}}
+                suite.username, suite.password = "fixture-user", "fixture-password"
+                suite.pin, suite.evidence = {"fixture": "pin"}, {}
+                suite.wait_addon = Mock()
+                h.install_config, h.supervisor = Mock(), Mock()
+                def ssh(command, **kwargs):
+                    if command.startswith("docker inspect app_"):
+                        value = json.dumps([{"Image": pushed_id, "Name": "/app_local_woow-omnigent"}])
+                    elif " cat /usr/share/omnigent/artifact-pin.json" in command:
+                        value = json.dumps(suite.pin)
+                    elif "SHOW server_version" in command:
+                        value = "16.10"
+                    elif "SELECT version_num" in command:
+                        value = "fixture_head"
+                    else:
+                        value = ""
+                    return SimpleNamespace(stdout=value.encode())
+                h.ssh = Mock(side_effect=ssh)
+                h.verify_guest_image = Mock(wraps=h.verify_guest_image)
+                suite.install(baseline=baseline)
+                h.verify_guest_image.assert_called_once_with(config_id)
+                self.assertEqual(suite.container, "app_local_woow-omnigent")
+
+    def test_backup_restore_and_coldboot_use_bound_guest_manifest_for_both_versions(self):
+        for version in ("0.1.23", "0.1.24"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as d:
+                config, config_id, manifest, pushed_id = registry_fixture(version)
+                suite = acceptance.Acceptance.__new__(acceptance.Acceptance)
+                h = suite.host = host.Host(d)
+                h.image_identities[config_id] = provenance.registry_identity(manifest, pushed_id, config, config_id)
+                suite.old_image = suite.new_image = {"Id": config_id}
+                suite.config = {"version": version}
+                suite.wait_addon = Mock()
+                suite.data_preserved = Mock()
+                suite.api = Mock()
+                suite.hooks = Mock()
+                suite.state = {}
+                h.supervisor = Mock(side_effect=[{"slug": "abcd"}, {"addons": [{"slug": acceptance.ADDON}]}, {}])
+                starts, boots = iter((b"before", b"after")), iter((b"kernel-before", b"kernel-after"))
+                def ssh(command, **kwargs):
+                    if "StartedAt" in command:
+                        data = next(starts)
+                    elif "boot_id" in command:
+                        data = next(boots)
+                    else:
+                        data = json.dumps([{"Image": pushed_id, "Name": "/app_local_woow-omnigent"}]).encode()
+                    return SimpleNamespace(stdout=data)
+                h.ssh = Mock(side_effect=ssh)
+                h.verify_guest_image = Mock(wraps=h.verify_guest_image)
+                self.assertEqual(suite.backup("baseline" if version == "0.1.23" else "candidate"), "abcd")
+                self.assertEqual(h.verify_guest_image.call_count, 2)
+                suite.restore("abcd", version, config_id)
+                h.cold_shutdown, h.boot, h.registry_tunnel = Mock(), Mock(), Mock()
+                suite.cold_boot()
+                self.assertEqual(h.verify_guest_image.call_count, 4)
+                self.assertTrue(all(c.args == (config_id,) for c in h.verify_guest_image.call_args_list))
+
     def test_registry_final_identity_guards_remain_enforced_and_identified(self):
         for guard, new_id, revision in (("candidate_producer_image_id", "wrong", "source"),
                                          ("candidate_core_source", "expected", "wrong"),
-                                         ("verified", "expected", "source")):
+                                         ("verified", "expected", "source"),
+                                         ("verified", "linked-config", "source")):
             with self.subTest(guard=guard):
                 suite = acceptance.Acceptance.__new__(acceptance.Acceptance)
                 suite.host = host.Host("/unused-fixture-path")
@@ -882,6 +1108,9 @@ class AcceptanceTests(unittest.TestCase):
                     "Id": new_id, "Config": {"Labels": {"org.opencontainers.image.revision": revision}}}])
                 suite.config = {"version": "0.1.24"}
                 suite.producer = {"image_id": "expected", "checkout_commit": HEAD, "addon_tree": TREE}
+                suite.baseline_identity = {"config_digest": "baseline-config", "producer_image_id": "baseline-id"}
+                suite.candidate_identity = {"config_digest": "linked-config", "producer_image_id": "expected",
+                                            "producer_id_kind": "manifest"}
                 suite.pin = {"sourceCommit": "source", "wheelSha256": "wheel"}
                 suite.evidence = {"candidate": {}}
                 if guard == "verified":

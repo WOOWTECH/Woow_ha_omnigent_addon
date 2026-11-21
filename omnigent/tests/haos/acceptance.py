@@ -24,7 +24,7 @@ from . import browser
 from .host import (BASELINE_COMMIT, BASELINE_CONFIG_SHA256, BASELINE_IMAGE,
                    HAOS_SHA256, HAOS_URL, IMAGE_TAG, Host, candidate_artifact,
                    download, require, wait_for)
-from .provenance import validate_source
+from .provenance import archive_identity, validate_source
 
 ADDON = "local_woow-omnigent"
 DIRECT = "http://127.0.0.1:18000"
@@ -143,6 +143,8 @@ class Acceptance:
         head = self.host.run(["git", "rev-parse", "HEAD"]).stdout.decode().strip()
         tree = self.host.run(["git", "rev-parse", "HEAD:omnigent"]).stdout.decode().strip()
         validate_source(self.producer, head, tree, ROOT)
+        self.candidate_identity = archive_identity(self.private / "candidate.tar", self.producer["image_id"])
+        self.evidence["candidate"]["archive_identity"] = self.candidate_identity
         baseline = self.private / "baseline.yaml"
         download("https://raw.githubusercontent.com/WOOWTECH/Woow_ha_omnigent_addon/"
                  + BASELINE_COMMIT + "/omnigent/config.yaml", baseline,
@@ -151,17 +153,20 @@ class Acceptance:
         require(self.old_config["version"] == "0.1.23" and self.old_config["backup"] == "cold",
                 "baseline configuration mismatch")
         self.host.run(["docker", "pull", "--platform", "linux/amd64", BASELINE_IMAGE], timeout=300)
+        self.baseline_identity = self.host.baseline_identity()
         self.host.run(["docker", "load", "-i", str(self.private / "candidate.tar")], timeout=180)
         (self.private / "candidate.tar").unlink()
         self.evidence["baseline"] = {"version": "0.1.23", "source_commit": BASELINE_COMMIT,
-                                     "image": BASELINE_IMAGE}
+                                     "image": BASELINE_IMAGE, "archive_identity": self.baseline_identity}
 
     def registry(self):
         self.host.registry()
-        self.old_image = self.host.publish_local(BASELINE_IMAGE, "0.1.23")
-        self.new_image = self.host.publish_local(IMAGE_TAG, self.config["version"])
+        self.old_image = self.host.publish_local(BASELINE_IMAGE, "0.1.23", identity=self.baseline_identity)
+        self.new_image = self.host.publish_local(IMAGE_TAG, self.config["version"], identity=self.candidate_identity)
         with self.host.registry_stage("candidate_producer_image_id"):
-            require(self.new_image["Id"] == self.producer["image_id"], "producer image ID mismatch")
+            require(self.new_image["Id"] in (self.candidate_identity["producer_image_id"],
+                                            self.candidate_identity["config_digest"]),
+                    "producer image ID mismatch")
         with self.host.registry_stage("candidate_core_source"):
             labels = self.new_image["Config"]["Labels"]
             require(labels.get("org.opencontainers.image.revision") == self.pin["sourceCommit"],
@@ -223,6 +228,7 @@ class Acceptance:
         require(any(a.get("slug") == ADDON for a in info.get("addons", [])),
                 "backup does not contain the add-on")
         self.wait_addon("0.1.23" if name == "baseline" else self.config["version"])
+        self.host.verify_guest_image(expected)
         after = self.host.ssh(command).stdout.strip()
         require(before and after and before != after, "cold backup did not restart the add-on")
         return slug

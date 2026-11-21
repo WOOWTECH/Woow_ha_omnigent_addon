@@ -20,6 +20,8 @@ import zipfile
 
 import httpx
 
+from .provenance import MANIFEST_TYPES, archive_identity, registry_identity
+
 HAOS_URL = "https://github.com/home-assistant/operating-system/releases/download/18.1/haos_ova-18.1.qcow2.xz"
 HAOS_SHA256 = "60df08773901e1eac9b9cfe03d53e1d939e67b669c172c3a41037fb3cd295b9d"
 BASELINE_COMMIT = "191577fb937b1c131117083908e2fb54f5991e15"
@@ -176,6 +178,7 @@ class Host:
         self.registry_created = False
         self.registry_progress = {"launch_attempted": False, "container_created": False,
                                   "container_running": None}
+        self.image_identities = {}
         self.guard_stop = threading.Event()
         self.disk_exhausted = False
         self.ssh_base = ["ssh", "-i", str(self.private / "key"), "-p", "12222",
@@ -521,9 +524,11 @@ rc=$?; probe curl_exit "$rc"; exit "$rc"
     def registry_stage(self, stage):
         allowed = {"registry_pull", "registry_launch", "registry_inspect", "registry_container_state",
                    "host_registry_http", "guest_registry_forwarding", "candidate_producer_image_id",
-                   "candidate_core_source"} | {
+                   "candidate_core_source", "baseline_archive", "baseline_anchor_inspect",
+                   "baseline_anchor_tag", "baseline_anchor_save"} | {
                        role + "_" + step for role in ("baseline", "candidate")
-                       for step in ("tag", "push", "inspect", "metadata", "architecture", "version")}
+                       for step in ("tag", "push", "inspect", "metadata", "architecture", "version",
+                                    "source_identity", "registry_binding")}
         require(stage in allowed, "invalid registry stage")
         self.registry_progress["stage"] = stage
         self.registry_progress["exception"] = None
@@ -636,8 +641,42 @@ rc=$?; probe curl_exit "$rc"; exit "$rc"
         finally:
             diagnostic["tunnel_exit"] = tunnel.poll()
 
-    def publish_local(self, source, version):
+    def baseline_identity(self):
+        # Export only the image pulled by immutable digest, then discard the tar.
+        tag, archive = "haos-acceptance-baseline:0.1.23", self.private / "baseline-image.tar"
+        result = self._registry_run("baseline_anchor_inspect", ["docker", "image", "inspect",
+                                    "--format", "{{.Id}}", BASELINE_IMAGE])
+        image_id = result.stdout.decode().strip()
+        self._registry_run("baseline_anchor_tag", ["docker", "tag", BASELINE_IMAGE, tag])
+        try:
+            self._registry_run("baseline_anchor_save", ["docker", "save", "-o", str(archive), tag], timeout=180)
+            with self.registry_stage("baseline_archive"):
+                return archive_identity(archive, image_id, expected_tag=tag)
+        finally:
+            archive.unlink(missing_ok=True)
+
+    def _registry_metadata(self, suffix):
+        require(re.fullmatch(r"(?:manifests/0\.1\.(?:23|24)|blobs/sha256:[0-9a-f]{64})", suffix),
+                "unexpected registry metadata path")
+        diagnostic = {"object": "manifest" if suffix.startswith("manifests/") else "config",
+                      "http_status": None, "bytes": 0}
+        self.registry_progress.setdefault("metadata_reads", []).append(diagnostic)
+        with httpx.stream("GET", "http://127.0.0.1:15000/v2/omnigent-acceptance/" + suffix,
+                          headers={"Accept": ", ".join(MANIFEST_TYPES)}, timeout=10,
+                          trust_env=False, follow_redirects=False) as response:
+            diagnostic["http_status"] = response.status_code
+            require(response.status_code == 200, "registry metadata HTTP failure")
+            data = bytearray()
+            for chunk in response.iter_bytes():
+                diagnostic["bytes"] += len(chunk)
+                require(diagnostic["bytes"] <= 1024 * 1024, "registry metadata size bound exceeded")
+                data.extend(chunk)
+            return bytes(data), response.headers.get("Docker-Content-Digest")
+
+    def publish_local(self, source, version, *, identity):
         require(version in ("0.1.23", "0.1.24"), "unexpected acceptance image version")
+        require(all(re.fullmatch(r"sha256:[0-9a-f]{64}", identity.get(key, ""))
+                    for key in ("config_digest", "producer_image_id")), "invalid anchored identity")
         role = "baseline" if version == "0.1.23" else "candidate"
         target = "127.0.0.1:15000/omnigent-acceptance:" + version
         self._registry_run(role + "_tag", ["docker", "tag", source, target])
@@ -650,6 +689,15 @@ rc=$?; probe curl_exit "$rc"; exit "$rc"
             require(image["Architecture"] == "amd64", "wrong add-on architecture")
         with self.registry_stage(role + "_version"):
             require(image["Config"]["Labels"].get("io.hass.version") == version, "wrong add-on version")
+        with self.registry_stage(role + "_source_identity"):
+            require(image["Id"] in (identity["producer_image_id"], identity["config_digest"]),
+                    "loaded image differs from anchored source")
+        with self.registry_stage(role + "_registry_binding"):
+            raw, digest = self._registry_metadata("manifests/" + version)
+            config, _ = self._registry_metadata("blobs/" + identity["config_digest"])
+            proof = registry_identity(raw, digest, config, identity["config_digest"])
+            self.image_identities[image["Id"]] = proof
+            self.registry_progress.setdefault("images", {})[role] = proof
         return image
 
     def install_config(self, config):
@@ -663,10 +711,13 @@ rc=$?; probe curl_exit "$rc"; exit "$rc"
         self.supervisor("POST", "/store/reload", {})
 
     def verify_guest_image(self, expected_id):
+        proof = self.image_identities.get(expected_id)
+        require(proof is not None, "guest image has no verified registry identity")
         # Names changed from addon_ to app_ in recent Supervisor releases.
         command = "docker inspect app_local_woow-omnigent 2>/dev/null || docker inspect addon_local_woow-omnigent"
         image = json.loads(self.ssh(command).stdout)[0]
-        require(image["Image"] == expected_id, "Supervisor is not running the verified image")
+        require(image["Image"] in (proof["config_digest"], proof["manifest_digest"]),
+                "Supervisor is not running the verified image")
         return image["Name"].lstrip("/")
 
     def cold_shutdown(self):
