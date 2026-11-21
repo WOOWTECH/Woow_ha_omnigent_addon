@@ -29,7 +29,8 @@ BASELINE_CONFIG_SHA256 = "719c4bf219e7d176c5cffe1f6514dacc2c2fc1f47682a0a7b48b6e
 BASELINE_IMAGE = "ghcr.io/woowtech/woow-ha-omnigent-amd64@sha256:86d316c08de48166c942823362cef86f9c3e8680417b005a9ecead1b8921aa3e"
 REGISTRY_IMAGE = "registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
 IMAGE_TAG = "upgrade-comparison/woow-omnigent:new"
-PORTS = (10080, 18123, 18000, 12222, 15000, 18443)
+HA_PORTS = (18080, 18123)
+PORTS = (*HA_PORTS, 18000, 12222, 15000, 18443)
 GIB = 1024**3
 
 
@@ -399,8 +400,8 @@ curl --silent --show-error --write-out '\n%{http_code}' --max-time """ + str(tim
             "-device", "qemu-xhci,id=xhci", "-drive",
             "if=none,id=config,format=raw,readonly=on,file=" + str(self.private / "config.img"),
             "-device", "usb-storage,drive=config",
-            "-nic", "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:10080-:80,"
-            "hostfwd=tcp:127.0.0.1:18123-:8123,hostfwd=tcp:127.0.0.1:18000-:8000,"
+            "-nic", f"user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:{HA_PORTS[0]}-:80,"
+            f"hostfwd=tcp:127.0.0.1:{HA_PORTS[1]}-:8123,hostfwd=tcp:127.0.0.1:18000-:8000,"
             "hostfwd=tcp:127.0.0.1:12222-:22222",
         ], log_name="qemu.log")
         try:

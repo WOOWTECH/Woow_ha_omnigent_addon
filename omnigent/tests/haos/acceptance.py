@@ -22,7 +22,7 @@ import yaml
 
 from . import browser
 from .host import (BASELINE_COMMIT, BASELINE_CONFIG_SHA256, BASELINE_IMAGE,
-                   HAOS_SHA256, HAOS_URL, IMAGE_TAG, Host, candidate_artifact,
+                   HAOS_SHA256, HAOS_URL, HA_PORTS, IMAGE_TAG, Host, candidate_artifact,
                    download, require, wait_for)
 from .provenance import archive_identity, validate_source
 
@@ -128,11 +128,12 @@ class Acceptance:
 
     def find_ha(self):
         def ready():
-            for port in (10080, 18123):
+            for port in HA_PORTS:
                 base = "http://127.0.0.1:" + str(port)
                 try:
                     r = httpx.get(base + "/api/onboarding", timeout=5)
                     if r.status_code == 200 and isinstance(r.json(), list):
+                        self.evidence["ha_core"] = {"forwarded_port": port}
                         return base
                 except (httpx.HTTPError, ValueError):
                     pass

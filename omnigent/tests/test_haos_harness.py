@@ -607,6 +607,10 @@ class HostTests(unittest.TestCase):
                 self.assertEqual(argv[0], "qemu-system-x86_64")
                 self.assertIn("q35,accel=kvm", argv)
                 self.assertNotIn("sudo", argv)
+                network = argv[argv.index("-nic") + 1]
+                self.assertIn(f"hostfwd=tcp:127.0.0.1:{host.HA_PORTS[0]}-:80,", network)
+                self.assertIn(f"hostfwd=tcp:127.0.0.1:{host.HA_PORTS[1]}-:8123,", network)
+                self.assertTrue(set(host.HA_PORTS).issubset(host.PORTS))
                 events.append("start")
                 return qemu
             h.start = Mock(side_effect=start)
@@ -1520,6 +1524,45 @@ class BrowserTests(unittest.TestCase):
                                                    "same_origin": True})
             self.assertNotIn("PRIVATE", json.dumps(progress))
             self.assertNotIn("127.0.0.1", json.dumps(progress))
+
+    def test_configured_ha_ports_support_discovery_and_real_browser(self):
+        from playwright.sync_api import sync_playwright
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"[]" if self.path == "/api/onboarding" else b"<!doctype html><title>fixture</title>"
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json" if self.path == "/api/onboarding" else "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *args):
+                pass
+        # Use the actual configured forwards, not an arbitrary free port: HTTPX
+        # can reach ports Chromium rejects before any request leaves the browser.
+        for port in host.HA_PORTS:
+            with self.subTest(port=port):
+                server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    suite = acceptance.Acceptance.__new__(acceptance.Acceptance)
+                    suite.evidence = {}
+                    base = suite.find_ha()
+                    self.assertEqual(base, "http://127.0.0.1:" + str(port))
+                    self.assertEqual(suite.evidence["ha_core"], {"forwarded_port": port})
+                    with sync_playwright() as driver:
+                        chromium = driver.chromium.launch(headless=True, args=["--no-sandbox"])
+                        context = chromium.new_context()
+                        try:
+                            response = context.new_page().goto(base + "/", wait_until="domcontentloaded", timeout=10000)
+                            self.assertEqual(response.status, 200)
+                        finally:
+                            context.close()
+                            chromium.close()
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=5)
 
     def test_real_browser_records_ambiguous_input_and_closes(self):
         from playwright.sync_api import Error

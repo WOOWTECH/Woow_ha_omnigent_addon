@@ -33,6 +33,14 @@ an unavailable accelerator is a failed acceptance prerequisite.
 | Time | 60-minute job; 50-minute acceptance process; individual commands/readiness also bounded |
 | Networking | QEMU user networking; all forwarded ports and the registry listen on loopback |
 
+The HA HTTP forwards use host ports 18080 and 18123 (guest ports 80 and 8123).
+Port availability checks, QEMU forwarding and Core discovery share these values.
+The receipt records only the selected allowlisted forwarded-port integer. Port
+10080 is [restricted by Chromium](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/net/base/port_util.cc):
+an HTTP client may reach it while browser navigation fails before sending HTTP.
+The local regression discovers Core on each configured forward and requires real
+Chromium navigation to succeed without disabling browser port protections.
+
 Sparse capacity is not free physical capacity. The physical reserve aborts the
 run if image pulls, backup data or guest writes consume it. The harness does not
 delete preinstalled runner software to make space. A failed preflight requires a
