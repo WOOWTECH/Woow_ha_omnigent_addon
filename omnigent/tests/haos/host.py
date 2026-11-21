@@ -207,10 +207,11 @@ class Host:
         require(method in ("GET", "POST", "DELETE") and re.fullmatch(r"/[a-zA-Z0-9_./-]+", path),
                 "invalid Supervisor request")
         # Root developer access belongs solely to this newly created guest.
-        # The Supervisor token stays inside the guest shell and is never printed.
+        # Supervisor injects SUPERVISOR_TOKEN into the CLI container environment.
+        # Read only that runtime value; it never leaves the guest shell.
         command = r"""
 set -eu
-token=$(docker inspect hassio_cli | jq -r '.[0].Config.Env[] | select(startswith("SUPERVISOR_TOKEN=")) | sub("^SUPERVISOR_TOKEN=";"")')
+token=$(docker exec hassio_cli printenv SUPERVISOR_TOKEN)
 test -n "$token"
 address=$(docker inspect hassio_supervisor | jq -r '.[0].NetworkSettings.Networks | to_entries[0].value.IPAddress')
 test -n "$address"
@@ -426,9 +427,9 @@ for tool in docker curl jq; do
     if [ "$rc" -ne 0 ]; then missing=1; fi
 done
 [ "$missing" -eq 0 ] || exit 127
-cli=$(docker inspect hassio_cli)
-rc=$?; probe cli_inspect_exit "$rc"; [ "$rc" -eq 0 ] || exit "$rc"
-token=$(printf '%s' "$cli" | jq -er '.[0].Config.Env[] | select(startswith("SUPERVISOR_TOKEN=")) | sub("^SUPERVISOR_TOKEN=";"") | select(length > 0)')
+token=$(docker exec hassio_cli printenv SUPERVISOR_TOKEN)
+rc=$?; probe cli_token_exec_exit "$rc"; [ "$rc" -eq 0 ] || exit "$rc"
+test -n "$token"
 rc=$?; probe token_lookup_exit "$rc"; [ "$rc" -eq 0 ] || exit "$rc"
 supervisor=$(docker inspect hassio_supervisor)
 rc=$?; probe supervisor_inspect_exit "$rc"; [ "$rc" -eq 0 ] || exit "$rc"
@@ -449,12 +450,20 @@ rc=$?; probe curl_exit "$rc"; exit "$rc"
             progress["command_timeout"] = True
             result = error
         allowed = {"docker_available_exit", "curl_available_exit", "jq_available_exit",
-                   "cli_inspect_exit", "token_lookup_exit", "supervisor_inspect_exit",
+                   "cli_token_exec_exit", "token_lookup_exit", "supervisor_inspect_exit",
                    "network_lookup_exit", "network_count", "address_lookup_exit", "curl_exit"}
         for line in (result.stderr or b"").splitlines():
             match = re.fullmatch(rb"HAOS_BOOT ([a-z_]+) ([0-9]{1,3})", line)
             if match and match[1].decode() in allowed and int(match[2]) <= 255:
                 progress[match[1].decode()] = int(match[2])
+        # Missing/stopped CLI or absent runtime token can be normal startup.
+        # Missing executables and jq usage/compile errors cannot become ready.
+        if any(progress.get(tool + "_available_exit", 0) != 0 for tool in ("docker", "curl", "jq")):
+            raise BootFailure("required guest probe executable missing")
+        if progress.get("cli_token_exec_exit") in (126, 127):
+            raise BootFailure("CLI runtime token command unavailable")
+        if any(progress.get(key) in (2, 3) for key in ("network_lookup_exit", "address_lookup_exit")):
+            raise BootFailure("Supervisor probe jq program invalid")
         body, _, status = (result.stdout or b"").rstrip(b"\n").rpartition(b"\n")
         if re.fullmatch(rb"[0-9]{3}", status) and (int(status) == 0 or 100 <= int(status) <= 599):
             progress["http_status"] = int(status)

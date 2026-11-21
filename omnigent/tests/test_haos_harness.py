@@ -414,7 +414,9 @@ class HostTests(unittest.TestCase):
                 self.boot_fixture({"healthy": True, "addons": [{"state": "started"}]}, root_info)
 
     def supervisor_probe_fixture(self, *, missing=None, token=True, address=True,
-                                 inspect_exit=0, status=200, curl_exit=0, timeout=False):
+                                 inspect_exit=0, status=200, curl_exit=0, timeout=False,
+                                 token_exec_exit=0, cli_env_null=False, operation=False,
+                                 jq_program_invalid=False):
         """Execute the actual POSIX probe with real jq and controlled commands."""
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -423,60 +425,93 @@ class HostTests(unittest.TestCase):
             jq = host.shutil.which("jq")
             self.assertIsNotNone(jq, "jq is required for the real shell regression")
             if missing != "jq":
-                (tools / "jq").symlink_to(jq)
+                if jq_program_invalid:
+                    (tools / "jq").write_text("#!/bin/sh\nexec " + jq + " '['\n")
+                    (tools / "jq").chmod(0o700)
+                else:
+                    (tools / "jq").symlink_to(jq)
             cli = [{"Config": {"Env": ["SUPERVISOR_TOKEN=SYNTHETIC_PRIVATE"] if token else []}}]
+            if cli_env_null:
+                cli[0]["Config"]["Env"] = None
             supervisor = [{"NetworkSettings": {"Networks": {
                 "fixture_network": {"IPAddress": "192.0.2.123" if address else ""}}}}]
             docker = tools / "docker"
-            docker.write_text("#!/bin/sh\n" + (
-                f"exit {inspect_exit}\n" if inspect_exit else
-                "case \"$2\" in\nhassio_cli) printf '%s' '" + json.dumps(cli) + "';;\n"
-                "hassio_supervisor) printf '%s' '" + json.dumps(supervisor) + "';;\nesac\n"))
+            docker.write_text("#!/bin/sh\ncase \"$*\" in\n"
+                "'exec hassio_cli printenv SUPERVISOR_TOKEN') printf '%s' '"
+                + ("SYNTHETIC_PRIVATE" if token else "") + f"'; exit {token_exec_exit};;\n"
+                "'inspect hassio_cli') printf '%s' '" + json.dumps(cli) + "';;\n"
+                "'inspect hassio_supervisor') printf '%s' '" + json.dumps(supervisor)
+                + f"'; exit {inspect_exit};;\n*) exit 99;;\nesac\n")
             docker.chmod(0o700)
             if missing != "curl":
                 curl = tools / "curl"
                 curl.write_text("#!/bin/sh\nprintf '%s\\n' "
-                                "'{\"result\":\"ok\",\"data\":{\"healthy\":true,\"private\":\"SYNTHETIC_PRIVATE\"}}' "
-                                f"'{status}'\nprintf '%s\\n' 'SYNTHETIC_PRIVATE 192.0.2.123' >&2\nexit {curl_exit}\n")
+                                "'{\"result\":\"ok\",\"data\":{\"healthy\":true,\"private\":\"SYNTHETIC_PRIVATE\"}}'\n"
+                                f"case \"$*\" in *--write-out*) printf '%s\\n' '{status}';; esac\n"
+                                f"printf '%s\\n' 'SYNTHETIC_PRIVATE 192.0.2.123' >&2\nexit {curl_exit}\n")
                 curl.chmod(0o700)
             h = host.Host(root)
             def ssh(command, **kwargs):
-                self.assertFalse(kwargs["check"])
+                if not operation:
+                    self.assertFalse(kwargs["check"])
                 self.assertEqual(kwargs["timeout"], 30)
                 result = host.subprocess.run(["/bin/sh", "-c", command], capture_output=True,
-                                             env={"PATH": str(tools)}, timeout=5)
+                                             env={"PATH": str(tools)}, input=kwargs.get("data"), timeout=5)
                 if timeout:
                     raise host.subprocess.TimeoutExpired("private command", 30,
                                                          output=result.stdout, stderr=result.stderr)
+                if kwargs.get("check", True):
+                    host.require(result.returncode == 0, "fixture guest command failed")
                 return result
             h.ssh = ssh
-            result = h._supervisor_boot_info("supervisor_info")
+            result = (h.supervisor("POST", "/backups/new/partial", {"name": "fixture"}, timeout=30)
+                      if operation else h._supervisor_boot_info("supervisor_info"))
             self.assertNotIn("SYNTHETIC_PRIVATE", json.dumps(h.boot_progress))
             self.assertNotIn("192.0.2.123", json.dumps(h.boot_progress))
-            return result, h.boot_progress["supervisor_info"]
+            return result, h.boot_progress.get("supervisor_info", {})
+
+    def test_supervisor_readiness_uses_runtime_token_without_cli_inspect_env(self):
+        result, progress = self.supervisor_probe_fixture(cli_env_null=True)
+        self.assertTrue(result.get("healthy"))
+        self.assertEqual(progress["http_status"], 200)
+
+    def test_old_inspect_token_filter_reproduces_jq_exit_five_on_null_env(self):
+        # A synthetic malformed inspect shape reproduces the observed exit code;
+        # the failed CI guest's raw inspect payload was intentionally not retained.
+        result = host.subprocess.run(["jq", "-er", '.[0].Config.Env[] | '
+            'select(startswith("SUPERVISOR_TOKEN=")) | sub("^SUPERVISOR_TOKEN=";"")'],
+            input=b'[{"Config":{"Env":null}}]', capture_output=True, timeout=5)
+        self.assertEqual(result.returncode, 5)
+
+    def test_supervisor_operations_use_runtime_token_without_cli_inspect_env(self):
+        result, _ = self.supervisor_probe_fixture(cli_env_null=True, operation=True)
+        self.assertTrue(result.get("healthy"))
 
     def test_supervisor_probe_records_successful_command_families(self):
         result, progress = self.supervisor_probe_fixture()
         self.assertTrue(result["healthy"])
         for name in ("docker_available_exit", "curl_available_exit", "jq_available_exit",
-                     "cli_inspect_exit", "token_lookup_exit", "supervisor_inspect_exit",
+                     "cli_token_exec_exit", "token_lookup_exit", "supervisor_inspect_exit",
                      "network_lookup_exit", "address_lookup_exit", "curl_exit", "ssh_exit"):
             self.assertEqual(progress[name], 0, name)
         self.assertEqual(progress["network_count"], 1)
         self.assertEqual(progress["http_status"], 200)
         self.assertTrue(progress["api_ok"])
 
-    def test_supervisor_probe_records_missing_guest_tools(self):
+    def test_supervisor_probe_fails_immediately_for_missing_guest_tools(self):
         for tool in ("curl", "jq"):
-            with self.subTest(tool=tool):
-                result, progress = self.supervisor_probe_fixture(missing=tool)
-                self.assertEqual(result, {})
-                self.assertNotEqual(progress[tool + "_available_exit"], 0)
-                self.assertEqual(progress["ssh_exit"], 127)
-                self.assertIsNone(progress["http_status"])
+            with self.subTest(tool=tool), self.assertRaisesRegex(host.BootFailure, "executable missing"):
+                self.supervisor_probe_fixture(missing=tool)
+
+    def test_supervisor_probe_rejects_impossible_command_and_jq_errors(self):
+        with self.assertRaisesRegex(host.BootFailure, "token command unavailable"):
+            self.supervisor_probe_fixture(token_exec_exit=127)
+        with self.assertRaisesRegex(host.BootFailure, "jq program invalid"):
+            self.supervisor_probe_fixture(jq_program_invalid=True)
 
     def test_supervisor_probe_records_inspect_and_lookup_failures(self):
-        for options, field in (({"inspect_exit": 1}, "cli_inspect_exit"),
+        for options, field in (({"inspect_exit": 1}, "supervisor_inspect_exit"),
+                               ({"token_exec_exit": 1}, "cli_token_exec_exit"),
                                ({"token": False}, "token_lookup_exit"),
                                ({"address": False}, "address_lookup_exit")):
             with self.subTest(field=field):

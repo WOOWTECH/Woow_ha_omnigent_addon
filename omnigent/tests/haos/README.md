@@ -109,6 +109,13 @@ The guest probe records Docker/curl/jq availability, container inspection,
 token lookup, network count and address lookup exit codes, plus health and an
 allowlisted system state. These diagnostics are captured before cleanup; raw
 commands, response bodies, IP addresses, tokens and QEMU/SSH output stay private.
+Supervisor supplies the CLI plugin's token through its
+[container environment](https://github.com/home-assistant/supervisor/blob/main/supervisor/docker/cli.py).
+Both readiness and later Supervisor operations read only that runtime variable
+using `docker exec hassio_cli printenv SUPERVISOR_TOKEN`, captured inside the
+guest shell. A stopped CLI or absent/empty token remains retryable during startup;
+missing executables and jq usage/compile errors fail immediately. Health and root
+state still require successful authenticated HTTP responses from both endpoints.
 An exited QEMU process fails immediately instead of consuming the SSH timeout.
 Cleanup terminates the harness's processes and verifies the registry ownership
 label before deleting it and its anonymous volume. After QEMU is reaped, cleanup
