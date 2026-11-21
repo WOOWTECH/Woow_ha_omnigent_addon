@@ -1527,6 +1527,81 @@ class BrowserTests(unittest.TestCase):
             self.assertNotIn("PRIVATE", json.dumps(progress))
             self.assertNotIn("127.0.0.1", json.dumps(progress))
 
+    def test_real_logout_uses_account_page_and_retains_ingress(self):
+        from playwright.sync_api import sync_playwright
+        prefix = "/api/hassio_ingress/SYNTHETIC"
+        state = {"posts": 0, "escape": False}
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+            def reply(self, status, body):
+                self.send_response(status)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def do_GET(self):
+                if self.path == "/":
+                    body = ('<iframe src="' + prefix + '/settings/mcp-server"></iframe>').encode()
+                elif self.path == prefix + "/settings/mcp-server":
+                    body = b"<h1>Create profile</h1>"
+                elif self.path == prefix + "/settings/account":
+                    login = "/login" if state["escape"] else prefix + "/login"
+                    # Candidate AccountSection awaits its real logout request,
+                    # then hard-navigates to the prefixed login route.
+                    body = ('<h1>Account</h1><button onclick="void signOut()">Sign out</button>'
+                            '<script>async function signOut(){await fetch('
+                            + json.dumps(prefix + "/auth/logout") + ',{method:"POST"});location.href='
+                            + json.dumps(login) + ';}</script>').encode()
+                elif self.path in (prefix + "/login", "/login"):
+                    body = b'<label>Password<input type="password"></label>'
+                else:
+                    return self.reply(404, b"")
+                self.reply(200, body)
+            def do_POST(self):
+                if self.path != prefix + "/auth/logout":
+                    return self.reply(404, b"")
+                state["posts"] += 1
+                self.reply(204, b"")
+            def log_message(self, *args):
+                pass
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with sync_playwright() as driver:
+                chromium = driver.chromium.launch(headless=True, args=["--no-sandbox"])
+                context = chromium.new_context()
+                try:
+                    for escape in (False, True):
+                        with self.subTest(escape=escape):
+                            state.update(posts=0, escape=escape)
+                            page = context.new_page()
+                            try:
+                                base = "http://127.0.0.1:" + str(server.server_port)
+                                page.goto(base + "/")
+                                frame = page.frames[1]
+                                frame.get_by_role("heading", name="Create profile", exact=True).wait_for()
+                                self.assertEqual(frame.get_by_role("button", name="Sign out", exact=True).count(), 0)
+                                progress = {}
+                                if escape:
+                                    with self.assertRaisesRegex(RuntimeError, "logout escaped Ingress"):
+                                        browser.logout_ingress(frame, base + prefix, progress, timeout=2000)
+                                else:
+                                    browser.logout_ingress(frame, base + prefix, progress, timeout=2000)
+                                    self.assertEqual(frame.url, base + prefix + "/login")
+                                self.assertEqual(state["posts"], 1)
+                                self.assertEqual(progress["stage"], "logout_login")
+                                self.assertNotIn("SYNTHETIC", json.dumps(progress))
+                            finally:
+                                page.close()
+                finally:
+                    context.close()
+                    chromium.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
     def test_real_clipboard_completion_and_permission_failure(self):
         from playwright.sync_api import sync_playwright
         canonical = "https://localhost/fixture/mcp/private_SYNTHETIC_CLIPBOARD"

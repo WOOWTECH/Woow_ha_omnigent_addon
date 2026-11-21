@@ -119,8 +119,11 @@ loop processing delayed frame navigation; Python sleep polling of cached frame
 URLs can leave [Playwright state outdated](https://playwright.dev/python/docs/library#timesleep-leads-to-outdated-state).
 Only an Ingress frame navigation satisfies the wait; unrelated frames do not.
 The browser checks add-on login, lazy settings pages, MCP creation/copy, one-time
-URL hiding, expired-session navigation and logout. A separate localhost HTTPS
-proxy serves the complete `/omnigent` deployment prefix. Its generated CA is
+URL hiding, expired-session navigation and logout. After signing back in, it
+opens the Ingress-prefixed `/settings/account` page and waits for the Account
+heading before clicking the exact `Sign out` button. That control is absent from
+the MCP settings page. The resulting login form must remain inside Ingress.
+A separate localhost HTTPS proxy serves the complete `/omnigent` deployment prefix. Its generated CA is
 explicitly trusted by the MCP client: certificate verification stays enabled.
 The copied URL must equal the API's `connection_url`. The candidate UI awaits
 asynchronous `writeText()` but exposes no copied/toast success state; a completed

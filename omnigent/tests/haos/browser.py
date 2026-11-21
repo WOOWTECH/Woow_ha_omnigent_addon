@@ -123,6 +123,21 @@ def copy_profile_url(page, frame, canonical, progress, *, timeout=10000):
         element.dispose()
 
 
+def logout_ingress(frame, ingress_base, progress, *, timeout=30000):
+    from playwright.sync_api import expect
+
+    # The candidate renders Sign out only in Account settings, not the MCP page.
+    progress["stage"] = "logout_account_navigation"
+    frame.goto(ingress_base + "/settings/account", wait_until="domcontentloaded", timeout=timeout)
+    progress["stage"] = "logout_account_heading"
+    expect(frame.get_by_role("heading", name="Account", exact=True)).to_be_visible(timeout=timeout)
+    progress["stage"] = "addon_logout"
+    frame.get_by_role("button", name="Sign out", exact=True).click(timeout=timeout)
+    progress["stage"] = "logout_login"
+    expect(frame.get_by_label("Password", exact=True)).to_be_visible(timeout=timeout)
+    require("/api/hassio_ingress/" in frame.url, "logout escaped Ingress")
+
+
 def ingress(base, ha_username, ha_password, username, password, member, public_base, *, progress=None):
     from playwright.sync_api import sync_playwright, expect
 
@@ -233,11 +248,7 @@ def ingress(base, ha_username, ha_password, username, password, member, public_b
         frame.get_by_role("button", name="Sign in", exact=True).click()
         progress["stage"] = "addon_relogin"
         expect(frame.get_by_role("heading", name="Create profile", exact=True)).to_be_visible(timeout=30000)
-        progress["stage"] = "addon_logout"
-        frame.get_by_role("button", name="Sign out", exact=True).click()
-        progress["stage"] = "logout_login"
-        expect(frame.get_by_label("Password", exact=True)).to_be_visible(timeout=30000)
-        require("/api/hassio_ingress/" in frame.url, "logout escaped Ingress")
+        logout_ingress(frame, ingress_base, progress)
         progress["stage"] = "browser_errors"
         require(not progress["javascript_errors"] and not progress["asset_errors"],
                 "Ingress browser JavaScript or asset failure")
