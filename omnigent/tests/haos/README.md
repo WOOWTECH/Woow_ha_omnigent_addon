@@ -117,8 +117,28 @@ guest shell. A stopped CLI or absent/empty token remains retryable during startu
 missing executables and jq usage/compile errors fail immediately. Health and root
 state still require successful authenticated HTTP responses from both endpoints.
 An exited QEMU process fails immediately instead of consuming the SSH timeout.
+Registry diagnostics distinguish the pinned image pull, container launch/state,
+host HTTP readiness, guest forwarding, baseline/candidate tag/push/inspect,
+metadata parsing, architecture/version checks and final producer/source guards.
+The implicit Docker pull is split into a bounded explicit pull and a launch with
+`--pull=never`, using the same pinned image and loopback binding. Each boundary
+retains a pass/fail boolean. Only fixed stage names, command exit codes, timeout
+flags and allowlisted exception classes/error markers are reported, including
+certificate, missing-path and connection failures when Docker emits those markers.
+Container creation/running state and exit code, host HTTP status and guest
+probe/SSH tunnel exit codes distinguish server readiness from forwarding. The
+loopback registry uses HTTP, so it has no local certificate/key paths to report.
+Command arguments, output, exception text and registry response bodies stay
+private; these checkpoints do not weaken any image identity or transport requirement.
 Cleanup terminates the harness's processes and verifies the registry ownership
-label before deleting it and its anonymous volume. After QEMU is reaped, cleanup
+label before deleting it and its anonymous volume. A launch is marked attempted
+before invoking Docker; container creation remains unknown if that command fails
+or times out. Cleanup inspects the exact unique container name after every launch
+attempt, including failed launches. An inspect error requires a successful empty
+exact-name listing to confirm absence. Ownership mismatch or lookup failure
+preserves the container and fails cleanup; only the matching ownership label
+permits removal. Separate sanitized cleanup status preserves the original failure
+stage. After QEMU is reaped, cleanup
 settles pending udev events and restores the one original ACL only if the original
 character device, inode, device numbers, owner and group still match. ACL-related
 mode changes are excluded from identity. A mismatch skips the ACL write and fails

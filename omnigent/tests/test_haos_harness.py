@@ -144,6 +144,165 @@ class BindingTests(unittest.TestCase):
 
 
 class HostTests(unittest.TestCase):
+    def test_registry_failure_retains_command_exit_without_raw_output(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            with patch("haos.host.subprocess.run", side_effect=[
+                    SimpleNamespace(returncode=0, stdout=b"", stderr=b""), SimpleNamespace(
+                    returncode=125, stdout=b"", stderr=b"denied synthetic-secret /mcp/private_token")]):
+                with self.assertRaises(RuntimeError):
+                    h.registry()
+            self.assertEqual(h.registry_progress["stage"], "registry_launch")
+            self.assertEqual(h.registry_progress["commands"][-1], {
+                "stage": "registry_launch", "exit": 125, "timeout": False,
+                "error_codes": ["access_denied"]})
+            self.assertIsNone(h.registry_created)
+            self.assertEqual(h.registry_progress["exception"], "RuntimeError")
+            self.assertEqual(h.registry_progress["states"], {"registry_pull": True, "registry_launch": False})
+            self.assertNotIn("synthetic-secret", json.dumps(h.registry_progress))
+            self.assertNotIn("private_token", json.dumps(h.registry_progress))
+
+    def test_registry_push_timeout_retains_exact_image_stage(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.run = Mock(side_effect=[SimpleNamespace(returncode=0, stdout=b"", stderr=b""),
+                host.subprocess.TimeoutExpired(["docker", "synthetic-secret"], 240)])
+            with self.assertRaises(host.subprocess.TimeoutExpired):
+                h.publish_local(host.IMAGE_TAG, "0.1.24")
+            self.assertEqual(h.registry_progress["stage"], "candidate_push")
+            self.assertEqual(h.registry_progress["commands"][-1], {
+                "stage": "candidate_push", "exit": None, "timeout": True, "error_codes": []})
+            self.assertNotIn("synthetic-secret", json.dumps(h.registry_progress))
+
+    def test_registry_forwarding_failure_retains_probe_and_tunnel_exit(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.start = Mock(return_value=Mock(poll=Mock(return_value=255)))
+            h.ssh = Mock(return_value=SimpleNamespace(returncode=7))
+            def once(check, *args):
+                self.assertFalse(check())
+                raise RuntimeError("timeout")
+            with patch("haos.host.wait_for", side_effect=once), self.assertRaises(RuntimeError):
+                h.registry_tunnel()
+            self.assertEqual(h.registry_progress["stage"], "guest_registry_forwarding")
+            self.assertEqual(h.registry_progress["forwarding"], {
+                "probe_exit": 7, "probe_timeout": False, "tunnel_exit": 255})
+
+    def test_registry_image_version_guard_remains_enforced_and_identified(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            image = {"Architecture": "amd64", "Config": {"Labels": {"io.hass.version": "wrong"}}}
+            h.run = Mock(side_effect=[SimpleNamespace(returncode=0, stdout=b"", stderr=b"")]*2 + [
+                SimpleNamespace(returncode=0, stdout=json.dumps([image]).encode(), stderr=b"")])
+            with self.assertRaisesRegex(RuntimeError, "wrong add-on version"):
+                h.publish_local(host.BASELINE_IMAGE, "0.1.23")
+            self.assertEqual(h.registry_progress["stage"], "baseline_version")
+            self.assertTrue(all(c["exit"] == 0 for c in h.registry_progress["commands"]))
+
+    def test_registry_all_command_boundaries_preserve_failures_and_markers(self):
+        stages = ["registry_pull", "registry_launch", "registry_inspect"] + [
+            role + "_" + step for role in ("baseline", "candidate") for step in ("tag", "push", "inspect")]
+        for stage in stages:
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                h.run = Mock(return_value=SimpleNamespace(returncode=1, stdout=b"", stderr=
+                    b"x509: https://synthetic-secret no such file or directory"))
+                with self.assertRaises(RuntimeError):
+                    h._registry_run(stage, ["docker", "synthetic-secret"])
+                self.assertEqual(h.registry_progress["stage"], stage)
+                self.assertFalse(h.registry_progress["states"][stage])
+                self.assertEqual(h.registry_progress["commands"][0]["error_codes"],
+                                 ["certificate_error", "missing_path"])
+                self.assertNotIn("synthetic-secret", json.dumps(h.registry_progress))
+
+    def test_registry_exception_class_is_allowlisted_without_details(self):
+        class SecretException(Exception):
+            pass
+        for error, kind in ((OSError("private-path"), "OSError"),
+                            (ValueError("private-value"), "ValueError"),
+                            (SecretException("private-value"), "other")):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                h.run = Mock(side_effect=error)
+                with self.assertRaises(type(error)):
+                    h._registry_run("registry_pull", ["docker", "private-command"])
+                self.assertEqual(h.registry_progress["exception"], kind)
+                self.assertNotIn("private-", json.dumps(h.registry_progress))
+                self.assertNotIn("SecretException", json.dumps(h.registry_progress))
+
+    def test_registry_container_and_host_http_boundaries(self):
+        for running, status in ((False, None), (True, 503), (True, 200)):
+            with self.subTest(running=running, status=status), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                h.run = Mock(side_effect=[SimpleNamespace(returncode=0, stdout=b"", stderr=b"")]*2 + [
+                    SimpleNamespace(returncode=0, stdout=json.dumps(
+                        {"Running": running, "ExitCode": 0 if running else 2}).encode(), stderr=b"")])
+                h.registry_tunnel = Mock()
+                def once(check, *args):
+                    host.require(check(), "timeout")
+                with patch("haos.host.wait_for", side_effect=once), \
+                        patch("haos.host.httpx.get", return_value=SimpleNamespace(status_code=status)):
+                    if running and status == 200:
+                        h.registry()
+                        h.registry_tunnel.assert_called_once()
+                        self.assertTrue(h.registry_progress["states"]["host_registry_http"])
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            h.registry()
+                        h.registry_tunnel.assert_not_called()
+                        stage = "host_registry_http" if running else "registry_container_state"
+                        self.assertEqual(h.registry_progress["stage"], stage)
+                        self.assertFalse(h.registry_progress["states"][stage])
+                self.assertTrue(h.registry_created)
+                self.assertIs(h.registry_progress["container_running"], running)
+                commands = [call.args[0] for call in h.run.call_args_list]
+                self.assertEqual(commands[0], ["docker", "pull", "--platform", "linux/amd64", host.REGISTRY_IMAGE])
+                self.assertIn("--pull=never", commands[1])
+                self.assertIn("127.0.0.1:15000:5000", commands[1])
+
+    def test_registry_image_metadata_and_architecture_guards(self):
+        for payload, stage in ((b"invalid", "candidate_metadata"),
+                               (json.dumps([{"Architecture": "arm64"}]).encode(), "candidate_architecture")):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                h.run = Mock(side_effect=[SimpleNamespace(returncode=0, stdout=b"", stderr=b"")]*2 + [
+                    SimpleNamespace(returncode=0, stdout=payload, stderr=b"")])
+                with self.assertRaises((ValueError, RuntimeError)):
+                    h.publish_local(host.IMAGE_TAG, "0.1.24")
+                self.assertEqual(h.registry_progress["stage"], stage)
+                self.assertFalse(h.registry_progress["states"][stage])
+
+    def test_registry_host_http_exception_remains_safe_and_retryable(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.run = Mock(side_effect=[SimpleNamespace(returncode=0, stdout=b"", stderr=b"")]*2 + [
+                SimpleNamespace(returncode=0, stdout=b'{"Running":true,"ExitCode":0}', stderr=b"")])
+            def once(check, *args):
+                self.assertFalse(check())
+                raise RuntimeError("timeout")
+            with patch("haos.host.wait_for", side_effect=once), \
+                    patch("haos.host.httpx.get", side_effect=httpx.ConnectError("private-url")), \
+                    self.assertRaises(RuntimeError):
+                h.registry()
+            self.assertEqual(h.registry_progress["stage"], "host_registry_http")
+            self.assertEqual(h.registry_progress["host_http"], {"http_status": None, "exception": "HTTPError"})
+            self.assertNotIn("private-url", json.dumps(h.registry_progress))
+
+    def test_registry_forward_timeout_and_start_failure_remain_distinct(self):
+        for start_fails in (True, False):
+            with self.subTest(start_fails=start_fails), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                h.start = Mock(side_effect=OSError("private-path")) if start_fails else Mock(
+                    return_value=Mock(poll=Mock(return_value=None)))
+                h.ssh = Mock(side_effect=host.subprocess.TimeoutExpired(["private-command"], 10))
+                with patch("haos.host.wait_for", side_effect=lambda check, *args: check()), \
+                        self.assertRaises((OSError, host.subprocess.TimeoutExpired)):
+                    h.registry_tunnel()
+                self.assertEqual(h.registry_progress["stage"], "guest_registry_forwarding")
+                self.assertEqual(h.registry_progress["exception"], "OSError" if start_fails else "TimeoutExpired")
+                self.assertEqual(h.registry_progress["forwarding"]["probe_timeout"], not start_fails)
+                self.assertNotIn("private-", json.dumps(h.registry_progress))
+
     def test_kvm_refresh_settles_before_each_grant_and_keeps_original_acl(self):
         with tempfile.TemporaryDirectory() as d:
             h = host.Host(d)
@@ -627,11 +786,74 @@ class HostTests(unittest.TestCase):
     def test_cleanup_refuses_unowned_registry(self):
         with tempfile.TemporaryDirectory() as d:
             h = host.Host(d)
-            h.registry_created = True
-            h.run = Mock(return_value=SimpleNamespace(stdout=b"another-owner\n"))
+            h.registry_launch_attempted = True
+            h.run = Mock(return_value=SimpleNamespace(returncode=0, stdout=b"another-owner\n"))
             with self.assertRaisesRegex(RuntimeError, "ownership"):
                 h.cleanup()
             self.assertEqual(h.run.call_count, 1)
+            self.assertFalse(h.registry_progress["cleanup"]["ownership_match"])
+            self.assertEqual(h.registry_progress["cleanup"]["result"], "failure")
+
+    def test_cleanup_finds_owned_container_after_launch_timeout_or_error(self):
+        for timed_out in (True, False):
+            with self.subTest(timed_out=timed_out), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                ok = SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+                failure = host.subprocess.TimeoutExpired(["private-command"], 180) if timed_out else (
+                    SimpleNamespace(returncode=125, stdout=b"", stderr=b"private-error"))
+                h.run = Mock(side_effect=[ok, failure])
+                with self.assertRaises((host.subprocess.TimeoutExpired, RuntimeError)):
+                    h.registry()
+                self.assertTrue(h.registry_launch_attempted)
+                self.assertIsNone(h.registry_created)
+                self.assertIsNone(h.registry_progress["container_created"])
+                h.run = Mock(side_effect=[SimpleNamespace(returncode=0, stdout=h.owner.encode()), ok])
+                h.cleanup()
+                commands = [call.args[0] for call in h.run.call_args_list]
+                self.assertEqual(commands[0][:3], ["docker", "container", "inspect"])
+                self.assertEqual(commands[0][-1], h.owner)
+                self.assertEqual(commands[1], ["docker", "rm", "-f", "-v", h.owner])
+                self.assertTrue(h.registry_progress["container_created"])
+                self.assertEqual(h.registry_progress["cleanup"]["result"], "removed")
+                self.assertNotIn("private-", json.dumps(h.registry_progress))
+
+    def test_cleanup_requires_confirmed_registry_absence(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.registry_launch_attempted = True
+            h.registry_created = None
+            h.run = Mock(side_effect=[SimpleNamespace(returncode=1, stdout=b"", stderr=b"not found"),
+                                     SimpleNamespace(returncode=0, stdout=b"", stderr=b"")])
+            h.cleanup()
+            self.assertEqual(h.run.call_count, 2)
+            self.assertEqual(h.run.call_args.args[0], ["docker", "container", "ls", "--all", "--filter",
+                             "name=^/" + h.owner + "$", "--format", "{{.Names}}"])
+            self.assertEqual(h.registry_progress["cleanup"]["result"], "absent")
+            self.assertFalse(h.registry_progress["container_created"])
+
+    def test_cleanup_inspect_failure_is_not_absence(self):
+        for listing_exit, listing_output in ((1, b""), (0, b"present-container")):
+            with self.subTest(listing_exit=listing_exit), tempfile.TemporaryDirectory() as d:
+                h = host.Host(d)
+                h.registry_launch_attempted = True
+                h.run = Mock(side_effect=[SimpleNamespace(returncode=1, stdout=b"", stderr=b"private-error"),
+                    SimpleNamespace(returncode=listing_exit, stdout=listing_output, stderr=b"private-error")])
+                with self.assertRaises(RuntimeError):
+                    h.cleanup()
+                self.assertEqual(h.run.call_count, 2)
+                self.assertEqual(h.registry_progress["cleanup"]["result"], "failure")
+                self.assertNotIn("private-error", json.dumps(h.registry_progress))
+
+    def test_cleanup_registry_inspect_timeout_is_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            h = host.Host(d)
+            h.registry_launch_attempted = True
+            h.run = Mock(side_effect=host.subprocess.TimeoutExpired(["private-command"], 5))
+            with self.assertRaises(host.subprocess.TimeoutExpired):
+                h.cleanup()
+            self.assertEqual(h.run.call_count, 1)
+            self.assertEqual(h.registry_progress["cleanup"]["exception"], "TimeoutExpired")
+            self.assertEqual(h.registry_progress["cleanup"]["result"], "failure")
 
     def test_supervisor_secret_body_is_stdin_only(self):
         with tempfile.TemporaryDirectory() as d:
@@ -648,6 +870,48 @@ class HostTests(unittest.TestCase):
 
 
 class AcceptanceTests(unittest.TestCase):
+    def test_registry_final_identity_guards_remain_enforced_and_identified(self):
+        for guard, new_id, revision in (("candidate_producer_image_id", "wrong", "source"),
+                                         ("candidate_core_source", "expected", "wrong"),
+                                         ("verified", "expected", "source")):
+            with self.subTest(guard=guard):
+                suite = acceptance.Acceptance.__new__(acceptance.Acceptance)
+                suite.host = host.Host("/unused-fixture-path")
+                suite.host.registry = Mock()
+                suite.host.publish_local = Mock(side_effect=[{}, {
+                    "Id": new_id, "Config": {"Labels": {"org.opencontainers.image.revision": revision}}}])
+                suite.config = {"version": "0.1.24"}
+                suite.producer = {"image_id": "expected", "checkout_commit": HEAD, "addon_tree": TREE}
+                suite.pin = {"sourceCommit": "source", "wheelSha256": "wheel"}
+                suite.evidence = {"candidate": {}}
+                if guard == "verified":
+                    suite.registry()
+                else:
+                    with self.assertRaises(RuntimeError):
+                        suite.registry()
+                    self.assertEqual(suite.evidence["candidate"], {})
+                self.assertEqual(suite.host.registry_progress["stage"], guard)
+
+    def test_registry_failure_reaches_receipt_without_raw_command_data(self):
+        with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {
+                "RUNNER_TEMP": d, "HAOS_REPORT_DIR": d}):
+            suite = acceptance.Acceptance(Path(d))
+            suite.phase = "private image registry and image identities"
+            suite.run = suite.host.registry
+            suite.host.cleanup = Mock()
+            suite.host.run = Mock(return_value=SimpleNamespace(
+                returncode=125, stdout=b"synthetic-secret", stderr=b"denied /mcp/private_token"))
+            with patch("haos.acceptance.Acceptance", return_value=suite), \
+                    patch("haos.acceptance.signal.signal"), patch("haos.acceptance.os.umask"), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(acceptance.main(), 1)
+            text = (Path(d) / "haos-acceptance.json").read_text()
+            report = json.loads(text)
+            self.assertFalse(report["passed"])
+            self.assertEqual(report["evidence"]["registry_progress"]["stage"], "registry_pull")
+            for secret in ("synthetic-secret", "private_token"):
+                self.assertNotIn(secret, text)
+
     def test_cold_backup_requires_observed_container_restart(self):
         suite = acceptance.Acceptance.__new__(acceptance.Acceptance)
         suite.host = Mock()

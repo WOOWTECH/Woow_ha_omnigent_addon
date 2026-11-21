@@ -1,6 +1,7 @@
 """Owned host resources and verified input downloads for one disposable CI guest."""
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import hashlib
 import json
@@ -171,7 +172,10 @@ class Host:
         self.private = Path(private)
         self.owner = "haos-ci-" + self.private.name
         self.processes = []
+        self.registry_launch_attempted = False
         self.registry_created = False
+        self.registry_progress = {"launch_attempted": False, "container_created": False,
+                                  "container_running": None}
         self.guard_stop = threading.Event()
         self.disk_exhausted = False
         self.ssh_base = ["ssh", "-i", str(self.private / "key"), "-p", "12222",
@@ -513,31 +517,139 @@ rc=$?; probe curl_exit "$rc"; exit "$rc"
         }
         self.boot_progress["console_markers"] = [k for k, v in markers.items() if v in console]
 
+    @contextlib.contextmanager
+    def registry_stage(self, stage):
+        allowed = {"registry_pull", "registry_launch", "registry_inspect", "registry_container_state",
+                   "host_registry_http", "guest_registry_forwarding", "candidate_producer_image_id",
+                   "candidate_core_source"} | {
+                       role + "_" + step for role in ("baseline", "candidate")
+                       for step in ("tag", "push", "inspect", "metadata", "architecture", "version")}
+        require(stage in allowed, "invalid registry stage")
+        self.registry_progress["stage"] = stage
+        self.registry_progress["exception"] = None
+        self.registry_progress.setdefault("states", {})[stage] = False
+        try:
+            yield
+        except Exception as error:
+            self.registry_progress["exception"] = self.registry_exception(error)
+            raise
+        self.registry_progress["states"][stage] = True
+
+    @staticmethod
+    def registry_exception(error):
+        # Do not emit exception messages, URLs, filenames or arbitrary subclass names.
+        for kind in (subprocess.TimeoutExpired, httpx.TimeoutException, httpx.HTTPError,
+                     OSError, ValueError, TypeError, KeyError, IndexError, RuntimeError):
+            if isinstance(error, kind):
+                return kind.__name__
+        return "other"
+
+    def _registry_run(self, stage, argv, *, timeout=120):
+        with self.registry_stage(stage):
+            return self._registry_command(stage, argv, timeout=timeout)
+
+    def _registry_command(self, stage, argv, *, timeout):
+        diagnostic = {"stage": stage, "exit": None, "timeout": False, "error_codes": []}
+        self.registry_progress.setdefault("commands", []).append(diagnostic)
+        try:
+            result = self.run(argv, timeout=timeout, check=False)
+        except subprocess.TimeoutExpired:
+            diagnostic["timeout"] = True
+            raise
+        diagnostic["exit"] = result.returncode
+        if result.returncode:
+            output = (result.stdout + result.stderr)[-65536:].lower()
+            markers = {
+                "access_denied": b"denied", "rate_limited": b"toomanyrequests",
+                "connection_refused": b"connection refused", "no_space": b"no space left",
+                "manifest_unknown": b"manifest unknown", "missing_image": b"no such image",
+                "http_to_https": b"http response to https client",
+                "container_name_conflict": b"already in use",
+                "certificate_error": b"x509:", "tls_handshake": b"tls handshake",
+                "missing_path": b"no such file or directory", "dns_failure": b"no such host",
+                "connection_reset": b"connection reset", "daemon_unavailable": b"cannot connect to the docker daemon",
+            }
+            diagnostic["error_codes"] = [name for name, marker in markers.items() if marker in output]
+        require(result.returncode == 0, "registry command failed")
+        return result
+
     def registry(self):
-        self.run(["docker", "run", "-d", "--name", self.owner,
+        # Split Docker's implicit pull from container launch to identify either failure.
+        self._registry_run("registry_pull", ["docker", "pull", "--platform", "linux/amd64",
+                                             REGISTRY_IMAGE], timeout=180)
+        # A failed/timed-out Docker CLI can still have created the container.
+        self.registry_launch_attempted = True
+        self.registry_created = None
+        self.registry_progress.update(launch_attempted=True, container_created=None)
+        self._registry_run("registry_launch", ["docker", "run", "--pull=never", "-d", "--name", self.owner,
                   "--label", "io.woow.haos-ci=" + self.owner,
                   "-p", "127.0.0.1:15000:5000", REGISTRY_IMAGE], timeout=180)
         self.registry_created = True
+        self.registry_progress["container_created"] = True
+        result = self._registry_run("registry_inspect", ["docker", "inspect", "--format",
+                                   "{{json .State}}", self.owner])
+        with self.registry_stage("registry_container_state"):
+            state = json.loads(result.stdout)
+            running = state.get("Running") is True
+            self.registry_progress["container_running"] = running
+            code = state.get("ExitCode")
+            self.registry_progress["container_exit"] = code if type(code) is int else None
+            require(running, "registry container is not running")
+        diagnostic = {"http_status": None, "exception": None}
+        self.registry_progress["host_http"] = diagnostic
+        def ready():
+            diagnostic.update(http_status=None, exception=None)
+            try:
+                response = httpx.get("http://127.0.0.1:15000/v2/", timeout=3, trust_env=False)
+            except httpx.HTTPError as error:
+                diagnostic["exception"] = self.registry_exception(error)
+                return False
+            diagnostic["http_status"] = response.status_code
+            return response.status_code == 200
+        with self.registry_stage("host_registry_http"):
+            wait_for(ready, 30, "host registry readiness")
         self.registry_tunnel()
 
     def registry_tunnel(self):
         # Guest Docker recognizes loopback as a local registry. No insecure
         # registry configuration or extra container is added to HAOS.
-        self.start([*self.ssh_base[:-1], "-N", "-o", "ExitOnForwardFailure=yes",
+        with self.registry_stage("guest_registry_forwarding"):
+            self._registry_forward()
+
+    def _registry_forward(self):
+        diagnostic = {"probe_exit": None, "probe_timeout": False, "tunnel_exit": None}
+        self.registry_progress["forwarding"] = diagnostic
+        tunnel = self.start([*self.ssh_base[:-1], "-N", "-o", "ExitOnForwardFailure=yes",
                     "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=3",
                     "-R", "127.0.0.1:15000:127.0.0.1:15000", self.ssh_base[-1]])
-        wait_for(lambda: self.ssh("curl -fsS http://127.0.0.1:15000/v2/",
-                                 check=False, timeout=10).returncode == 0,
-                 30, "guest registry forwarding")
+        def ready():
+            diagnostic.update(probe_exit=None, probe_timeout=False)
+            try:
+                result = self.ssh("curl -fsS http://127.0.0.1:15000/v2/", check=False, timeout=10)
+            except subprocess.TimeoutExpired:
+                diagnostic["probe_timeout"] = True
+                raise
+            diagnostic["probe_exit"] = result.returncode
+            return result.returncode == 0
+        try:
+            wait_for(ready, 30, "guest registry forwarding")
+        finally:
+            diagnostic["tunnel_exit"] = tunnel.poll()
 
     def publish_local(self, source, version):
+        require(version in ("0.1.23", "0.1.24"), "unexpected acceptance image version")
+        role = "baseline" if version == "0.1.23" else "candidate"
         target = "127.0.0.1:15000/omnigent-acceptance:" + version
-        self.run(["docker", "tag", source, target])
-        self.run(["docker", "push", target], timeout=240)
-        result = self.run(["docker", "image", "inspect", source])
-        image = json.loads(result.stdout)[0]
-        require(image["Architecture"] == "amd64", "wrong add-on architecture")
-        require(image["Config"]["Labels"].get("io.hass.version") == version, "wrong add-on version")
+        self._registry_run(role + "_tag", ["docker", "tag", source, target])
+        self._registry_run(role + "_push", ["docker", "push", target], timeout=240)
+        result = self._registry_run(role + "_inspect", ["docker", "image", "inspect", source])
+        with self.registry_stage(role + "_metadata"):
+            image = json.loads(result.stdout)[0]
+            require(isinstance(image, dict), "invalid image metadata")
+        with self.registry_stage(role + "_architecture"):
+            require(image["Architecture"] == "amd64", "wrong add-on architecture")
+        with self.registry_stage(role + "_version"):
+            require(image["Config"]["Labels"].get("io.hass.version") == version, "wrong add-on version")
         return image
 
     def install_config(self, config):
@@ -579,9 +691,42 @@ rc=$?; probe curl_exit "$rc"; exit "$rc"
                 except subprocess.TimeoutExpired:
                     p.kill()
                     p.wait(timeout=2)
-        if self.registry_created:
-            r = self.run(["docker", "inspect", "--format",
+        if self.registry_launch_attempted:
+            self._cleanup_registry()
+
+    def _cleanup_registry(self):
+        # Preserve the failed acceptance stage while recording cleanup separately.
+        diagnostic = {"result": "pending", "inspect_exit": None, "absence_check_exit": None,
+                      "ownership_match": None, "remove_exit": None, "exception": None}
+        self.registry_progress["cleanup"] = diagnostic
+        try:
+            r = self.run(["docker", "container", "inspect", "--format",
                           '{{index .Config.Labels "io.woow.haos-ci"}}', self.owner],
                          check=False, timeout=5)
-            require(r.stdout.decode().strip() == self.owner, "registry ownership mismatch")
-            self.run(["docker", "rm", "-f", "-v", self.owner], timeout=10)
+            diagnostic["inspect_exit"] = r.returncode
+            if r.returncode:
+                # An inspect failure alone does not prove absence (daemon errors
+                # also fail). Require a successful, empty exact-name lookup.
+                listing = self.run(["docker", "container", "ls", "--all", "--filter",
+                                    "name=^/" + self.owner + "$", "--format", "{{.Names}}"],
+                                   check=False, timeout=5)
+                diagnostic["absence_check_exit"] = listing.returncode
+                require(listing.returncode == 0 and not listing.stdout.strip(),
+                        "registry cleanup could not confirm absence")
+                if self.registry_created is None:
+                    self.registry_created = False
+                    self.registry_progress["container_created"] = False
+                diagnostic["result"] = "absent"
+                return
+            diagnostic["ownership_match"] = r.stdout.decode().strip() == self.owner
+            require(diagnostic["ownership_match"], "registry ownership mismatch")
+            self.registry_created = True
+            self.registry_progress["container_created"] = True
+            result = self.run(["docker", "rm", "-f", "-v", self.owner], check=False, timeout=10)
+            diagnostic["remove_exit"] = result.returncode
+            require(result.returncode == 0, "registry cleanup removal failed")
+            diagnostic["result"] = "removed"
+        except Exception as error:
+            diagnostic["result"] = "failure"
+            diagnostic["exception"] = self.registry_exception(error)
+            raise

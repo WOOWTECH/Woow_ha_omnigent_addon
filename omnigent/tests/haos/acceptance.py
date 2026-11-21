@@ -61,6 +61,7 @@ class Acceptance:
         self.evidence = {}
         self.evidence["boot_progress"] = self.host.boot_progress
         self.evidence["kvm_access"] = self.host.kvm_access_progress
+        self.evidence["registry_progress"] = self.host.registry_progress
         self.phase = "initialization"
         self.username = "haos-ci-admin"
         self.password = secrets.token_urlsafe(24)
@@ -159,10 +160,13 @@ class Acceptance:
         self.host.registry()
         self.old_image = self.host.publish_local(BASELINE_IMAGE, "0.1.23")
         self.new_image = self.host.publish_local(IMAGE_TAG, self.config["version"])
-        labels = self.new_image["Config"]["Labels"]
-        require(self.new_image["Id"] == self.producer["image_id"], "producer image ID mismatch")
-        require(labels.get("org.opencontainers.image.revision") == self.pin["sourceCommit"],
-                "candidate core source mismatch")
+        with self.host.registry_stage("candidate_producer_image_id"):
+            require(self.new_image["Id"] == self.producer["image_id"], "producer image ID mismatch")
+        with self.host.registry_stage("candidate_core_source"):
+            labels = self.new_image["Config"]["Labels"]
+            require(labels.get("org.opencontainers.image.revision") == self.pin["sourceCommit"],
+                    "candidate core source mismatch")
+        self.host.registry_progress["stage"] = "verified"
         self.evidence["candidate"].update({
             "image_id": self.new_image["Id"], "core_source": self.pin["sourceCommit"],
             "producer_checkout": self.producer["checkout_commit"],
