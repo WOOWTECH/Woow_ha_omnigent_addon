@@ -153,6 +153,15 @@ TLS MCP diagnostics retain fixed profile-check stages, the last allowlisted RPC
 method/status/JSON-result flag, and GET/DELETE status/SSE-media-type/closed flags.
 Timeout and transport failures use fixed labels; URLs, tokens, headers and
 RPC parameters/results are excluded. HTTP client timeouts remain bounded.
+Browser diagnostics retain fixed stages for Chromium startup, HA login, sidebar,
+Ingress login/settings, profile creation/copy, expiry and logout. Document responses
+record only HTTP status, HA/Ingress scope and same-origin boolean; JavaScript and
+failed Ingress asset events retain counts only. Known Playwright error markers map
+to fixed labels (for example ambiguous locator or connection refusal); other errors
+remain unknown categories. No exception text, DOM, URLs or credentials are retained.
+Context, browser and driver cleanup are attempted independently after success or
+failure. Cleanup outcomes cannot replace the original browser failure. These
+checkpoints do not change selectors, navigation or acceptance assertions.
 Later Supervisor operations retain the last fixed operation label, method,
 SSH exit/timeout, HTTP status and `ok`/`error`/unknown result. The two recognized
 upstream error keys are `store_app_not_found_error` and `system_not_ready_error`;
@@ -202,7 +211,8 @@ log lines in the manual H3 checklist. These remain separate acceptance evidence.
 
 ## Local harness validation
 
-Install `requirements.txt`, nginx, jq and OpenSSL, then run from the repository root:
+Install `requirements.txt`, nginx, jq and OpenSSL, install Chromium with
+`python -m playwright install --with-deps chromium`, then run from the repository root:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=omnigent/tests \
@@ -211,6 +221,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=omnigent/tests \
 
 `NGINX_BINARY` can select a locally installed nginx executable. The tests exercise
 artifact selection, source binding, fail-closed preflight, ownership checks,
-sanitized failure output and a real TLS proxy against a small HTTP fixture.
+sanitized failure output, real Chromium failure/cleanup fixtures on loopback, and a
+real TLS proxy against a small HTTP fixture.
 They neither download HAOS nor launch a VM. The acceptance entry point itself
 requires the GitHub Actions environment and is invoked only by the PR workflow.

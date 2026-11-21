@@ -13,13 +13,13 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, mock_open, patch
+from unittest.mock import MagicMock, Mock, mock_open, patch
 import zipfile
 
 import httpx
 import yaml
 
-from haos import acceptance, host, provenance
+from haos import acceptance, browser, host, provenance
 
 
 HEAD = "a" * 40
@@ -1381,6 +1381,190 @@ class AcceptanceTests(unittest.TestCase):
         self.assertTrue(all("runner." not in str(value) for value in job["env"].values()))
         boot = next(step for step in job["steps"] if "python -m haos.acceptance" in step.get("run", ""))
         self.assertEqual(boot["env"]["HAOS_REPORT_DIR"], "$" + "{{ runner.temp }}/haos-report")
+
+
+class BrowserTests(unittest.TestCase):
+    def invoke(self, progress):
+        return browser.ingress("http://127.0.0.1:18123", "owner-fixture", "HA_PASSWORD_PRIVATE",
+                               "admin-fixture", "ADDON_PASSWORD_PRIVATE",
+                               {"username": "member-fixture", "password": "MEMBER_PASSWORD_PRIVATE"},
+                               "https://localhost:18443/omnigent", progress=progress)
+
+    def test_browser_boundaries_and_owned_cleanup(self):
+        from playwright.sync_api import Error
+        for target, stage, cleanup in [
+            ("launch", "browser_launch", {"context": None, "browser": None, "driver": True}),
+            ("context", "browser_context", {"context": None, "browser": True, "driver": True}),
+            ("page", "new_page", {"context": True, "browser": True, "driver": True}),
+            ("navigation", "ha_navigation", {"context": True, "browser": True, "driver": True}),
+            ("username", "ha_username", {"context": True, "browser": True, "driver": True}),
+        ]:
+            with self.subTest(stage=stage), patch("playwright.sync_api.sync_playwright") as factory:
+                driver = factory.return_value.start.return_value
+                chromium = driver.chromium.launch.return_value
+                context = chromium.new_context.return_value
+                page = context.new_page.return_value
+                method = {"launch": driver.chromium.launch, "context": chromium.new_context,
+                          "page": context.new_page, "navigation": page.goto,
+                          "username": page.locator.return_value.fill}[target]
+                failure = Error("private_oTOKEN HA_PASSWORD_PRIVATE https://private.invalid/secret")
+                method.side_effect = failure
+                progress = {}
+                with self.assertRaises(Error) as caught:
+                    self.invoke(progress)
+                self.assertIs(caught.exception, failure)
+                self.assertEqual(progress["stage"], stage)
+                self.assertEqual(progress["error"], "playwright_error")
+                self.assertEqual(progress["cleanup"], cleanup)
+                self.assertNotIn("PRIVATE", json.dumps(progress))
+                self.assertNotIn("private.invalid", json.dumps(progress))
+                driver.stop.assert_called_once()
+
+    def test_browser_success_and_cleanup_failure_are_distinct(self):
+        from playwright.sync_api import Error
+        for cleanup_fails in (False, True):
+            with self.subTest(cleanup_fails=cleanup_fails), patch("playwright.sync_api.sync_playwright") as factory, \
+                    patch("playwright.sync_api.expect"):
+                driver = factory.return_value.start.return_value
+                chromium = driver.chromium.launch.return_value
+                context = chromium.new_context.return_value
+                page = context.new_page.return_value
+                frame = Mock(url="http://127.0.0.1:18123/api/hassio_ingress/PRIVATE/")
+                page.frames = [frame]
+                created = {"token": "PRIVATE", "connection_url": "https://localhost:18443/omnigent/mcp/private_PRIVATE"}
+                page.expect_response = MagicMock()
+                page.expect_response.return_value.__enter__.return_value.value.json.return_value = created
+                page.evaluate.return_value = created["connection_url"]
+                frame.locator.return_value.inner_text.return_value = "fixture"
+                context.cookies.return_value = []
+                if cleanup_fails:
+                    context.close.side_effect = Error("PRIVATE cleanup error")
+                progress = {}
+                if cleanup_fails:
+                    with self.assertRaisesRegex(RuntimeError, "owned browser cleanup failed"):
+                        self.invoke(progress)
+                    self.assertEqual(progress["stage"], "browser_cleanup")
+                    self.assertEqual(progress["error"], "cleanup_failed")
+                else:
+                    self.assertEqual(self.invoke(progress), created)
+                    self.assertEqual(progress["stage"], "complete")
+                    self.assertIsNone(progress["error"])
+                self.assertEqual(progress["cleanup"], {"context": not cleanup_fails,
+                                                       "browser": True, "driver": True})
+                chromium.close.assert_called_once()
+                driver.stop.assert_called_once()
+                self.assertNotIn("PRIVATE", json.dumps(progress))
+
+    def test_browser_error_codes_are_fixed_and_bounded(self):
+        from playwright.sync_api import Error, TimeoutError
+        for error, code in [
+            (Error("Locator.fill: strict mode violation: private_oSECRET"), "ambiguous_locator"),
+            (Error("Page.goto: net::ERR_CONNECTION_REFUSED at private_oSECRET"), "connection_refused"),
+            (Error("Page.goto: net::ERR_NAME_NOT_RESOLVED at private_oSECRET"), "name_not_resolved"),
+            (Error("Page.goto: net::ERR_ABORTED at private_oSECRET"), "navigation_aborted"),
+            (Error("Navigation interrupted by another navigation private_oSECRET"), "navigation_interrupted"),
+            (Error("Executable doesn't exist at /private_oSECRET"), "browser_executable_missing"),
+            (Error("Host system is missing dependencies private_oSECRET"), "browser_dependencies_missing"),
+            (Error("Target page, context or browser has been closed private_oSECRET"), "browser_closed"),
+            (TimeoutError("private_oSECRET"), "timeout"),
+            (AssertionError("private_oSECRET"), "assertion_failed"),
+            (ValueError("private_oSECRET"), "response_shape"),
+            (RuntimeError("private_oSECRET"), "requirement_failed"),
+            (OSError("private_oSECRET"), "other"),
+            (Error("x" * 4096 + "strict mode violation"), "playwright_error"),
+        ]:
+            with self.subTest(code=code):
+                self.assertEqual(browser.error_code(error), code)
+
+    def test_browser_cleanup_preserves_original_failure(self):
+        from playwright.sync_api import Error
+        with patch("playwright.sync_api.sync_playwright") as factory:
+            driver = factory.return_value.start.return_value
+            chromium = driver.chromium.launch.return_value
+            context = chromium.new_context.return_value
+            failure = Error("net::ERR_CONNECTION_REFUSED private_oSECRET")
+            context.new_page.return_value.goto.side_effect = failure
+            context.close.side_effect = Error("cleanup private_oSECRET")
+            progress = {}
+            with self.assertRaises(Error) as caught:
+                self.invoke(progress)
+            self.assertIs(caught.exception, failure)
+            self.assertEqual(progress["stage"], "ha_navigation")
+            self.assertEqual(progress["error"], "connection_refused")
+            self.assertEqual(progress["cleanup"], {"context": False, "browser": True, "driver": True})
+            chromium.close.assert_called_once()
+            driver.stop.assert_called_once()
+
+    def test_browser_receipt_excludes_event_urls_and_error_text(self):
+        from playwright.sync_api import Error
+        with patch("playwright.sync_api.sync_playwright") as factory:
+            page = factory.return_value.start.return_value.chromium.launch.return_value.new_context.return_value.new_page.return_value
+            callbacks = {}
+            page.on.side_effect = lambda name, callback: callbacks.update({name: callback})
+            def navigate(*args, **kwargs):
+                callbacks["pageerror"](Error("PASSWORD_PRIVATE"))
+                callbacks["response"](SimpleNamespace(status=503,
+                    url="http://127.0.0.1:18123/api/hassio_ingress/PRIVATE/assets/PRIVATE.js?token=PRIVATE",
+                    request=SimpleNamespace(resource_type="script")))
+                callbacks["response"](SimpleNamespace(status=401,
+                    url="http://127.0.0.1:18123/api/hassio_ingress/PRIVATE/",
+                    request=SimpleNamespace(resource_type="document")))
+                raise Error("unknown PRIVATE browser failure")
+            page.goto.side_effect = navigate
+            progress = {}
+            with self.assertRaises(Error):
+                self.invoke(progress)
+            self.assertEqual(progress["javascript_errors"], 1)
+            self.assertEqual(progress["asset_errors"], 1)
+            self.assertEqual(progress["document"], {"scope": "ingress", "http_status": 401,
+                                                   "same_origin": True})
+            self.assertNotIn("PRIVATE", json.dumps(progress))
+            self.assertNotIn("127.0.0.1", json.dumps(progress))
+
+    def test_real_browser_records_ambiguous_input_and_closes(self):
+        from playwright.sync_api import Error
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b'<input name="username"><input name="username" value="PRIVATE">'
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *args):
+                pass
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            progress = {}
+            with self.assertRaises(Error):
+                browser.ingress("http://127.0.0.1:" + str(server.server_port),
+                                "fixture", "PRIVATE", "fixture", "PRIVATE", {}, "PRIVATE", progress=progress)
+            self.assertEqual(progress["stage"], "ha_username")
+            self.assertEqual(progress["error"], "ambiguous_locator")
+            self.assertEqual(progress["document"], {"scope": "ha", "http_status": 200, "same_origin": True})
+            self.assertEqual(progress["cleanup"], {"context": True, "browser": True, "driver": True})
+            self.assertNotIn("PRIVATE", json.dumps(progress))
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_real_browser_records_navigation_refusal_and_closes(self):
+        from playwright.sync_api import Error
+        # Bound, non-listening socket keeps the port owned throughout the probe.
+        with socket.socket() as reserved:
+            reserved.bind(("127.0.0.1", 0))
+            progress = {}
+            with self.assertRaises(Error):
+                browser.ingress("http://127.0.0.1:" + str(reserved.getsockname()[1]),
+                                "fixture", "PRIVATE", "fixture", "PRIVATE", {}, "PRIVATE", progress=progress)
+            self.assertEqual(progress["stage"], "ha_navigation")
+            self.assertEqual(progress["error"], "connection_refused")
+            self.assertIsNone(progress["document"])
+            self.assertEqual(progress["cleanup"], {"context": True, "browser": True, "driver": True})
+            self.assertNotIn("PRIVATE", json.dumps(progress))
 
 
 class RealTLSFixtureTests(unittest.TestCase):

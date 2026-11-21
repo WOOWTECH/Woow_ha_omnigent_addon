@@ -418,7 +418,7 @@ http {{
         self.step("canonical TLS MCP URL, history ACL and revocation", self.profiles)
         created = self.step("real HA sidebar Ingress and browser URL copy", lambda: browser.ingress(
             base, "haos-owner", self.ha_password, self.username, self.password,
-            self.state["member"], PUBLIC_BASE))
+            self.state["member"], PUBLIC_BASE, progress=self.evidence.setdefault("browser", {})))
         self.step("browser-created MCP URL works without HA cookies",
                   lambda: self.hooks.check_profile(created, active=True))
         self.candidate_backup = self.step("Supervisor candidate cold backup", lambda: self.backup("candidate"))
