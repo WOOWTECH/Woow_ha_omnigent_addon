@@ -1439,7 +1439,8 @@ class BrowserTests(unittest.TestCase):
                 created = {"token": "PRIVATE", "connection_url": "https://localhost:18443/omnigent/mcp/private_PRIVATE"}
                 page.expect_response = MagicMock()
                 page.expect_response.return_value.__enter__.return_value.value.json.return_value = created
-                page.evaluate.return_value = created["connection_url"]
+                frame.evaluate.return_value = {"secure_context": True, "write_policy": True}
+                page.evaluate.return_value = "matched"
                 frame.locator.return_value.inner_text.return_value = "fixture"
                 context.cookies.return_value = []
                 if cleanup_fails:
@@ -1525,6 +1526,95 @@ class BrowserTests(unittest.TestCase):
                                                    "same_origin": True})
             self.assertNotIn("PRIVATE", json.dumps(progress))
             self.assertNotIn("127.0.0.1", json.dumps(progress))
+
+    def test_real_clipboard_completion_and_permission_failure(self):
+        from playwright.sync_api import sync_playwright
+        canonical = "https://localhost/fixture/mcp/private_SYNTHETIC_CLIPBOARD"
+        error_text = "Could not copy the URL. Select and copy it manually."
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+            def do_GET(self):
+                mode = self.path.rsplit("/", 1)[-1]
+                if self.path.startswith("/frame/"):
+                    # Same async copy/caught error as the immutable candidate UI:
+                    # no success toast/state. Only the fixture delays the write.
+                    script = ""
+                    if mode == "delayed":
+                        script = ("const original=navigator.clipboard.writeText.bind(navigator.clipboard);"
+                                  "navigator.clipboard.writeText=async value=>{"
+                                  "await new Promise(r=>setTimeout(r,250));return original(value);};")
+                    value = "WRONG_SYNTHETIC_CLIPBOARD" if mode == "wrong" else canonical
+                    body = ('<div role="dialog"><button onclick="void copyLink()">Copy URL</button>'
+                            '<p id="error"></p></div><script>' + script
+                            + 'async function copyLink(){try{await navigator.clipboard.writeText('
+                            + json.dumps(value) + ');}catch{document.querySelector("#error").textContent='
+                            + json.dumps(error_text) + ';}}</script>').encode()
+                else:
+                    # Match HA's same-origin Ingress iframe: no allow or sandbox.
+                    body = ('<iframe title="Omnigent" src="/frame/' + mode + '"></iframe>').encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                if mode == "denied":
+                    self.send_header("Permissions-Policy", "clipboard-write=()")
+                if mode == "read_denied":
+                    self.send_header("Permissions-Policy", "clipboard-read=()")
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, *args):
+                pass
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with sync_playwright() as driver:
+                chromium = driver.chromium.launch(headless=True, args=["--no-sandbox"])
+                context = chromium.new_context(permissions=["clipboard-read", "clipboard-write"])
+                try:
+                    for mode in ("delayed", "immediate", "wrong", "denied", "read_denied", "pending_read"):
+                        with self.subTest(mode=mode):
+                            page = context.new_page()
+                            try:
+                                base = "http://127.0.0.1:" + str(server.server_port)
+                                page.goto(base + "/initial")
+                                # Do not let an earlier successful copy satisfy a later case.
+                                page.evaluate('navigator.clipboard.writeText("")')
+                                page.goto(base + "/" + mode)
+                                frame = page.frames[1]
+                                frame.get_by_role("button", name="Copy URL").wait_for()
+                                if mode == "pending_read":
+                                    # Prove the deadline also covers an unresolved native-API boundary.
+                                    page.evaluate("() => { navigator.clipboard.readText = () => new Promise(() => {}); }")
+                                progress = {}
+                                if mode in ("wrong", "pending_read"):
+                                    with self.assertRaisesRegex(RuntimeError, "clipboard copy failed"):
+                                        browser.copy_profile_url(page, frame, canonical, progress, timeout=500)
+                                    self.assertEqual(progress["clipboard"]["result"], "timeout")
+                                elif mode == "denied":
+                                    with self.assertRaisesRegex(RuntimeError, "clipboard copy failed"):
+                                        browser.copy_profile_url(page, frame, canonical, progress, timeout=2000)
+                                    self.assertEqual(progress["clipboard"]["result"], "ui_error")
+                                    self.assertFalse(progress["clipboard"]["write_policy"])
+                                elif mode == "read_denied":
+                                    with self.assertRaisesRegex(RuntimeError, "clipboard copy failed"):
+                                        browser.copy_profile_url(page, frame, canonical, progress, timeout=2000)
+                                    self.assertEqual(progress["clipboard"]["result"], "read_denied")
+                                else:
+                                    browser.copy_profile_url(page, frame, canonical, progress, timeout=2000)
+                                    self.assertEqual(page.evaluate("navigator.clipboard.readText()"), canonical)
+                                    self.assertEqual(progress["clipboard"]["result"], "matched")
+                                    self.assertTrue(progress["clipboard"]["write_policy"])
+                                self.assertNotIn("SYNTHETIC", json.dumps(progress))
+                                self.assertEqual(progress["stage"], "profile_clipboard")
+                            finally:
+                                page.close()
+                finally:
+                    context.close()
+                    chromium.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_real_browser_waits_for_ingress_navigation(self):
         from playwright.sync_api import sync_playwright, TimeoutError

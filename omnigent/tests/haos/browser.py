@@ -74,6 +74,55 @@ def open_ingress(page, sidebar, progress, *, timeout=60000):
     return selected.value
 
 
+def copy_profile_url(page, frame, canonical, progress, *, timeout=10000):
+    progress["stage"] = "profile_copy"
+    # Observe the actual iframe policy without granting permissions or changing
+    # HA's iframe. Only booleans and fixed outcomes enter the receipt.
+    progress["clipboard"] = frame.evaluate("""() => ({
+        secure_context: window.isSecureContext,
+        write_policy: document.featurePolicy?.allowsFeature('clipboard-write') ?? null
+    })""")
+    progress["clipboard"]["result"] = "pending"
+    element = frame.frame_element()
+    try:
+        frame.get_by_role("button", name="Copy URL", exact=True).click()
+        progress["stage"] = "profile_clipboard"
+        # click() does not await the candidate's writeText promise; there is no
+        # copied/toast state. Keep reading from the HA page as before. Explicitly
+        # await each asynchronous read, with a deadline even if a read hangs.
+        # Never return clipboard contents or exception text to the receipt.
+        progress["clipboard"]["result"] = page.evaluate("""({expected, iframe, timeout}) => new Promise(resolve => {
+            let finished = false;
+            let animation;
+            const finish = result => {
+                if (finished) return;
+                finished = true;
+                clearTimeout(deadline);
+                cancelAnimationFrame(animation);
+                resolve(result);
+            };
+            const deadline = setTimeout(() => finish('timeout'), timeout);
+            const check = async () => {
+                if (finished) return;
+                const document = iframe.contentDocument;
+                if (!document) return finish('frame_unavailable');
+                const error = 'Could not copy the URL. Select and copy it manually.';
+                if ([...document.querySelectorAll('[role="dialog"] p')]
+                        .some(p => p.textContent === error)) return finish('ui_error');
+                try {
+                    if (await navigator.clipboard.readText() === expected) return finish('matched');
+                } catch (error) {
+                    return finish(error.name === 'NotAllowedError' ? 'read_denied' : 'read_failed');
+                }
+                if (!finished) animation = requestAnimationFrame(check);
+            };
+            void check();
+        })""", arg={"expected": canonical, "iframe": element, "timeout": timeout})
+        require(progress["clipboard"]["result"] == "matched", "Ingress clipboard copy failed")
+    finally:
+        element.dispose()
+
+
 def ingress(base, ha_username, ha_password, username, password, member, public_base, *, progress=None):
     from playwright.sync_api import sync_playwright, expect
 
@@ -159,11 +208,7 @@ def ingress(base, ha_username, ha_password, username, password, member, public_b
         canonical = created["connection_url"]
         require(canonical == public_base + "/mcp/private_" + created["token"],
                 "Ingress API connection URL differs from complete public base")
-        progress["stage"] = "profile_copy"
-        frame.get_by_role("button", name="Copy URL", exact=True).click()
-        progress["stage"] = "profile_clipboard"
-        require(page.evaluate("navigator.clipboard.readText()") == canonical,
-                "Ingress copy differs from API connection URL")
+        copy_profile_url(page, frame, canonical, progress)
         progress["stage"] = "profile_dismiss"
         frame.get_by_role("button", name="Done", exact=True).click()
         progress["stage"] = "profile_hidden"

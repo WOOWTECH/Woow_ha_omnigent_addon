@@ -122,8 +122,15 @@ The browser checks add-on login, lazy settings pages, MCP creation/copy, one-tim
 URL hiding, expired-session navigation and logout. A separate localhost HTTPS
 proxy serves the complete `/omnigent` deployment prefix. Its generated CA is
 explicitly trusted by the MCP client: certificate verification stays enabled.
-The copied URL must equal the API's `connection_url`; cookie-free requests check
-initialize, 15 tools, session/history ACLs and active/revoked profiles. The
+The copied URL must equal the API's `connection_url`. The candidate UI awaits
+asynchronous `writeText()` but exposes no copied/toast success state; a completed
+Playwright click does not establish that clipboard writing has finished. The
+browser awaits actual clipboard equality on animation frames, bounded to ten
+seconds even if a read never resolves. The dialog's fixed copy-error message and
+clipboard read errors fail the check. This uses the unchanged HA iframe policy
+and real clipboard; no permission bypass, replacement clipboard or fixed sleep.
+Cookie-free requests check initialize, 15 tools, session/history ACLs and
+active/revoked profiles. The
 candidate's MCP SDK 1.30.0 [GET handler](https://github.com/modelcontextprotocol/python-sdk/blob/v1.30.0/src/mcp/server/streamable_http.py)
 opens SSE even with JSON POST replies and stateless sessions. The GET probe uses
 a streaming client, requires HTTP 200 with `text/event-stream`, and closes the
@@ -169,7 +176,9 @@ RPC parameters/results are excluded. HTTP client timeouts remain bounded.
 Browser diagnostics retain fixed stages for Chromium startup, HA login, sidebar,
 Ingress login/settings, profile creation/copy, expiry and logout. Document responses
 record only HTTP status, HA/Ingress scope and same-origin boolean; JavaScript and
-failed Ingress asset events retain counts only. Known Playwright error markers map
+failed Ingress asset events retain counts only. Clipboard diagnostics retain the
+iframe's secure-context/write-policy booleans and a fixed result code, never the
+expected or actual clipboard value. Known Playwright error markers map
 to fixed labels (for example ambiguous locator or connection refusal); other errors
 remain unknown categories. No exception text, DOM, URLs or credentials are retained.
 Context, browser and driver cleanup are attempted independently after success or
