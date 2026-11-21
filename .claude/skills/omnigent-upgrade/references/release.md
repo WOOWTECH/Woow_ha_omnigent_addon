@@ -32,8 +32,10 @@
   - `verify`（跑在新版上）：用同一組帳密登入，讀回這些資料，確認內容相同。
   - `smoke`（選用，新舊版各跑一次，只讀）：登入、列出 session、打開 `/v1/info`。在舊版通過、在新版失敗的項目，會被判為回歸。
 - **目前的 hook**（0.1.20 起）：邏輯都在 `omnigent/upgrade-check/omnigent_upgrade.py`，`seed`／`verify` 只是呼叫它。
-  - `seed` 建一個暫停中的 scheduled task（不需要 runner），以及一個經由 invite → register 建立的記號成員。
-  - `verify` 讀回來比對欄位，並用原密碼登入 admin 與記號成員。
+  - `seed` 建 paused task、成員、private/shared session、read grant 與檔案，不呼叫模型。
+  - 舊版已有 MCP API 時，另外保存一組 active/revoked profile；舊版沒有 API 時記錄這個差異。
+  - `verify` 比對 task/agent/session/ACL/檔案 SHA-256，用原密碼登入，驗新 profile 建立／使用／撤銷；已有 profile 的升級須保留原 token 與 revoked_at。
+  - `HOOK_STATE_DIR` 含測試密碼與 profile URL，mode 0600；只發布 report JSON，不發布 hook state。
   - 新版的 migration 動到別的資料表時，在這裡加上對應的資料。
 - **先在本機測 hook**（本機沒有 docker 也可以）：
   - 開兩個 venv，分別裝 FROM 與 TO 的 omnigent。用 accounts auth＋sqlite 起 server，啟動參數可參考 Hermes plugin 的 `tests/server-contract/run.py`。

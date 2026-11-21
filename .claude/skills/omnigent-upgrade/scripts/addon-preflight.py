@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """add-on 對 omnigent 的耦合點，在目標版本還成不成立。
 
-用法：addon-preflight.py <TO_VERSION> [--from <FROM_VERSION>] [--addon-dir <dir>] [--cache <dir>]
+用法：addon-preflight.py <TO_VERSION> --to-wheel <path> --receipt <artifact-pin.json> [--from <FROM_VERSION>]
+  --allow-snapshot 只供本機分析未發布的 producer receipt，不能當發版證據。
   例：addon-preflight.py 0.21.0
   FROM 預設讀 Dockerfile 的 ARG OMNIGENT_VERSION；addon-dir 預設是本 repo 的 omnigent/。
 
-從 PyPI 下載 FROM 與 TO 的 wheel（核對 PyPI 公布的 sha256），不安裝、不執行，
+FROM 從 PyPI 下載並核對 sha256；TO 使用實際 WOOW wheel 並驗 wheel/UI hash。不安裝、不執行，
 只讀 wheel 內容，逐項比對 add-on 實際用到的東西：
   1. HA Ingress 依賴的 web-ui：Dockerfile build 檢查的標記（`grep -R -q '<標記>'`）在 TO 的
      assets 裡還在不在、nginx 注入點 `<head>` 在 index.html 還在不在、nginx 的版本化資產別名
@@ -164,6 +165,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("to_version")
     ap.add_argument("--from", dest="from_version")
+    ap.add_argument("--to-wheel", type=Path, help="inspect the actual pinned WOOW wheel")
+    ap.add_argument("--receipt", type=Path, help="artifact pin required for --to-wheel")
+    ap.add_argument("--allow-snapshot", action="store_true", help="local analysis only: accept an unpublished producer receipt")
     ap.add_argument("--addon-dir", type=Path, default=REPO / "omnigent")
     ap.add_argument(
         "--cache",
@@ -180,7 +184,29 @@ def main():
     scripts = {p: p.read_text(errors="replace") for p in rootfs}
 
     hr(f"wheel（FROM {frm} → TO {to}）")
-    zf_from, zf_to = wheel(frm, a.cache), wheel(to, a.cache)
+    if a.allow_snapshot and not a.to_wheel:
+        ap.error("--allow-snapshot requires --to-wheel and --receipt")
+    zf_from = wheel(frm, a.cache)
+    if a.to_wheel:
+        if not a.receipt:
+            ap.error("--to-wheel requires --receipt")
+        sys.path.insert(0, str(addon / "build"))
+        import mcp_artifact
+        if a.allow_snapshot:
+            receipt = json.loads(a.receipt.read_text())
+            if receipt.get("publishable") is not False or receipt.get("sourceCommit") is not None:
+                ap.error("--allow-snapshot requires an explicitly unpublished producer receipt")
+            print("  [info] UNPUBLISHED SNAPSHOT: coupling analysis only, not release readiness")
+        else:
+            receipt = mcp_artifact.read_receipt(a.receipt)
+        mcp_artifact.verify_wheel(a.to_wheel, receipt)
+        if to != receipt["coreVersion"]:
+            ap.error("target version differs from receipt")
+        zf_to = zipfile.ZipFile(a.to_wheel)
+    else:
+        if (addon / "build/artifact-pin.json").exists():
+            ap.error("this add-on requires --to-wheel and --receipt; PyPI is not the MCP build")
+        zf_to = wheel(to, a.cache)
 
     hr("1. HA Ingress 依賴的 web-ui（細節見 references/ingress.md）")
     nginx = (addon / "rootfs/etc/nginx/nginx.conf").read_text()
