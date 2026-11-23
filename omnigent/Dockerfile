@@ -22,7 +22,7 @@
 ARG BUILD_FROM=ghcr.io/hassio-addons/base/amd64:20.2.0
 # From candidate-image.json: immutable, anonymously pullable, both architectures.
 # Only portable wheel files are copied; no executable from this stage is run.
-ARG OMNIGENT_WHEEL_IMAGE=ghcr.io/woowtech/omnigent-server-kubernetes@sha256:ca7d431c241388f7ed7ae4db6b7583bd3952f303a68a53467985d5a1f33539e5
+ARG OMNIGENT_WHEEL_IMAGE=ghcr.io/woowtech/omnigent-server-kubernetes@sha256:9757a792bbbf0b5ef1653aae584baa8e52a5b6cc35fede0e6e52a47df53327ef
 FROM ${OMNIGENT_WHEEL_IMAGE} AS woow-mcp-wheel
 FROM ${BUILD_FROM}
 
@@ -32,7 +32,7 @@ ARG BUILD_DATE
 
 ARG OMNIGENT_VERSION=0.21.0
 # Must equal build/artifact-pin.json; CI reads the reviewed pin.
-ARG OMNIGENT_SOURCE_COMMIT=459340b0d9516fd3ecb4c35a95eb6e17cc3a5340
+ARG OMNIGENT_SOURCE_COMMIT=164c61f071d5598a9f8d7b4def278b66e906bfe3
 ARG OMNIGENT_WHEEL_IMAGE
 # Alpine 3.24 同時提供 postgresql16 與 postgresql17。固定用 16，和其他
 # Omnigent 部署的 Postgres major version 一致（日後搬資料庫時，備份與
