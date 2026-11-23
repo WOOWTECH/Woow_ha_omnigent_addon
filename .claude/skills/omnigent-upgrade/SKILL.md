@@ -55,9 +55,11 @@ curl -s https://pypi.org/pypi/omnigent/json | python3 -c 'import json,sys; print
 
 ### H1 上游差異分析
 
+**先移植 overlay。** 驗證過的 wheel 與 `candidate-image.json` 來自 [WOOWTECH/omnigent](https://github.com/WOOWTECH/omnigent)：要先把 WOOWTECH overlay 移到上游 `v<TO>`、合併，push `main` 觸發 QA workflow 發布候選 image（PR 只 build 不推送），才拿得到 TO 的 wheel 與 receipt。0.23.0 的移植是 WOOWTECH/omnigent#6，做法寫在它的 PR 描述。拿到 receipt 後，先更新 `omnigent/build/mcp_artifact.py` 的 `CORE_VERSION`（以及換 migration head 時的 `REQUIRED`），再用 `mcp_artifact.py pin` 匯入 `artifact-pin.json`。
+
 ```bash
 S=.claude/skills/omnigent-upgrade/scripts
-python3 $S/addon-preflight.py <TO> --to-wheel <verified-wheel> --receipt omnigent/build/artifact-pin.json
+python3 $S/addon-preflight.py <TO> --from <FROM> --to-wheel <verified-wheel> --receipt omnigent/build/artifact-pin.json
 # 必須檢查實際候選 wheel；不能只檢查 PyPI 同名版本。紅燈＝有耦合點不成立。
 $S/upstream-diff.sh v<FROM> v<TO> <上游 clone>     # 上游這段期間的變動
 ```
@@ -78,6 +80,7 @@ $S/upstream-diff.sh v<FROM> v<TO> <上游 clone>     # 上游這段期間的變�
 - **ingress**：照「本次決定」調整 nginx 注入，見 `references/ingress.md`。改完 preflight 第 1 段要全部綠燈。
 - **固定產物**：從已驗證的 `candidate-image.json` 更新 `artifact-pin.json`，使用公開可匿名拉取的 `wheelImage@sha256`；null、snapshot、只有 mutable tag 都不能發版。兩架構必須使用同一份 wheel。
 - **資料檢查 hook**：在 `omnigent/upgrade-check/` 補上或更新 `seed`／`verify`，見 `references/release.md` 的「資料檢查」。
+- **HAOS 驗收的 baseline**：`omnigent/tests/haos/host.py` 寫死升級起點與這張 PR 的版本。把 `BASELINE_VERSION`、`BASELINE_COMMIT`（最新 Release 的 commit）、`BASELINE_CONFIG_SHA256`（該 commit 的 `config.yaml`）、`BASELINE_IMAGE`（`woow-ha-omnigent-amd64:<版本>` 的 index digest，可匿名查 GHCR）、`BASELINE_MIGRATION`（該版 omnigent 的 alembic head）換成最新 Release，`CANDIDATE_VERSION` 換成新版本。沒換的話 `HAOS acceptance` 會在初始化就失敗。
 - **CHANGELOG**（英文）：寫明 omnigent 的新版本、使用者看得到的變化，以及三件事：更新前先做備份、不能降版、回滾就是還原備份。
 - **`upgrade-notes.yaml`**：升版比對的報告要求時才建立，`change`、`key` 照報告複製。
 - **PR 描述**：寫入「本次決定」、preflight 改前與改後的結果、HA 驗收結果，以及沒驗到的地方。
