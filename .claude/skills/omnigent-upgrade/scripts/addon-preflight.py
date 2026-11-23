@@ -14,7 +14,8 @@ FROM 從 PyPI 下載並核對 sha256；TO 使用實際 WOOW wheel 並驗 wheel/U
   2. svc-omnigent-server 傳給 `omnigent server` 的 flag
   3. rootfs 腳本呼叫的 HTTP API 路徑
   4. rootfs 腳本設定的 OMNIGENT_* env（FROM 有讀、TO 不讀 = 失效）
-  5. config.yaml 預設的 feature flag（不認得的名稱會讓 server 起不來）
+  5. config.yaml 預設的 feature flag（不認得的名稱會讓 server 起不來；`_RETIRED_FEATURES` 裡的
+     退役名稱只會被忽略並記警告）
 另外列出供判讀的資訊：requires-python 與 Requires-Dist 差異、default_enabled 的 feature、
 WebSocket 路由、alembic revision、tunnel 協定 major、index.html 的資產形式。
 
@@ -126,7 +127,10 @@ def features(zf):
         m = re.search(r"feature=Feature\.([A-Z0-9_]+)", block)
         if m and re.search(r"default_enabled\s*=\s*True", block):
             defaults.append(enum.get(m.group(1), m.group(1)))
-    return set(enum.values()), sorted(set(defaults))
+    # 退役的名稱（例如 0.23 的 custom_agents_settings_ui）不在 enum 裡，但 server 只記警告、照常啟動。
+    m = re.search(r"^_RETIRED_FEATURES\s*=\s*frozenset\(\{([^}]*)\}\)", src, re.M)
+    retired = set(re.findall(r"\"([a-z0-9_]+)\"", m.group(1))) if m else set()
+    return set(enum.values()), sorted(set(defaults)), retired
 
 
 def ws_routes(zf):
@@ -301,15 +305,23 @@ def main():
     cfg = (addon / "config.yaml").read_text()
     m = re.search(r"^options:\n(?:  .*\n)*?  features: *\"?([^\"\n]*)\"?", cfg, re.M)
     wanted = [f.strip() for f in (m.group(1) if m else "").split(",") if f.strip()]
-    known_to, defaults_to = features(zf_to)
+    known_to, defaults_to, retired_to = features(zf_to)
     for f in wanted:
         name = f.lstrip("-")
-        say("OK" if name in known_to else "FAIL", f"{f}" + ("" if name in known_to else "：TO 不認得，server 會起不來"))
-    print(f"  [info] TO 預設開啟（不必列出、列出也關不掉）：{', '.join(defaults_to) or '無'}")
-    known_from, _ = features(zf_from)
+        if name in known_to:
+            say("OK", f)
+        elif name in retired_to:
+            say("OK", f"{f}：TO 已退役，server 忽略並記警告（預設值裡可以拿掉）")
+        else:
+            say("FAIL", f"{f}：TO 不認得，server 會起不來")
+    print(f"  [info] TO 預設開啟（不必列出；要關閉寫 -<name>）：{', '.join(defaults_to) or '無'}")
+    known_from, _, _ = features(zf_from)
     print(f"  [info] TO 新增的 feature：{', '.join(sorted(known_to - known_from)) or '無'}")
-    if known_from - known_to:
-        print(f"  [info] TO 移除的 feature：{', '.join(sorted(known_from - known_to))}")
+    gone = known_from - known_to
+    if gone & retired_to:
+        print(f"  [info] TO 退役的 feature（使用者列出只會被忽略並記警告）：{', '.join(sorted(gone & retired_to))}")
+    if gone - retired_to:
+        print(f"  [info] TO 移除的 feature（使用者列出會讓 server 起不來）：{', '.join(sorted(gone - retired_to))}")
 
     hr("6. 判讀用資訊")
     rf, df = metadata(zf_from)

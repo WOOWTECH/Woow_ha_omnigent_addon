@@ -18,8 +18,9 @@
 
 ## 兩支腳本的分工
 
-- **`addon-preflight.py <TO>`** 判定 add-on **實際用到的東西**在 TO 還在不在。
-  - 它從 PyPI 下載 FROM 與 TO 的 wheel，核對 sha256；不安裝，只讀 wheel 內容。
+- **`addon-preflight.py <TO> --to-wheel <wheel> --receipt <artifact-pin.json> [--from <FROM>]`** 判定 add-on **實際用到的東西**在 TO 還在不在。
+  - TO 讀實際要出貨的 WOOW MCP wheel，用 `--receipt`（`artifact-pin.json`）核對 wheel 與 UI 的 sha256；少了這兩個參數會拒跑。FROM 從 PyPI 下載上游同版 wheel、核對 sha256。不安裝，只讀 wheel 內容。
+  - FROM 預設讀 Dockerfile 的 `OMNIGENT_VERSION`。H2 改過 Dockerfile 之後重跑，要加 `--from <舊版>`，否則會拿 TO 跟自己比。
   - 有 FAIL 就是紅燈（exit 1）。
   - wheel 會快取在 `~/.cache/omnigent-addon-preflight`。
 - **`upstream-diff.sh`** 列出上游這段期間**改了什麼**，交給人判讀。
@@ -33,7 +34,7 @@
 | preflight 2：CLI flag | `svc-omnigent-server` 傳的 flag 在 TO 還在不在 | 不在的話，server 起不來 |
 | preflight 3：HTTP API | `init-admin-claim` 用的 `/health`、`/v1/info`、`/auth/setup` | 不在的話，自動建立 admin 會失敗 |
 | preflight 4：env | add-on 設定的 `OMNIGENT_*`，在 FROM 有讀、TO 不讀了 | 設定會無聲失效，要改用新的名稱。標成「add-on 自己用的」那幾個，omnigent 本來就不讀 |
-| preflight 5：feature flag | `config.yaml` 預設清單裡的名稱在 TO 認不認得；TO 預設開啟哪些 | 不認得的名稱會讓 server 拒絕啟動。<br>0.19 起有 `default_enabled`：預設開啟的 feature 不必列出，列出了也關不掉，關閉要寫 `-name`。<br>`config.yaml` 註解寫的「列出全部已知 feature」要跟著改 |
+| preflight 5：feature flag | `config.yaml` 預設清單裡的名稱在 TO 認不認得；TO 預設開啟哪些；哪些名稱「移除」、哪些「退役」 | 不認得的名稱會讓 server 拒絕啟動。<br>0.19 起有 `default_enabled`：預設開啟的 feature 不必列出，列出了也關不掉，關閉要寫 `-name`。<br>0.23 起有 `_RETIRED_FEATURES`：退役的名稱（例如 `custom_agents_settings_ui`）server 只記警告、照常啟動，add-on 不用自己過濾，CHANGELOG 說明即可。真正「移除」的名稱才會讓 server 起不來。<br>`config.yaml` 註解、`init-addon-config` 註解與 `DOCS.md` 列的預設開啟清單要跟著改 |
 | preflight 6：requires-python／Requires-Dist | 新增或改 pin 的依賴 | 新的 native 依賴在 Alpine（musl）上可能沒有 wheel，要從 source build，見下方「build」 |
 | preflight 6：alembic | 新增幾個 revision；TO 是否只有一個 head；有沒有移除 revision | 新 head 寫進 DB 之後，舊版 image 會拒絕啟動，使用者只能還原備份。有移除 revision 的話，跨多版升級可能接不上，要先查上游的說明 |
 | upstream-diff：migration 的資料操作 | `UPDATE`／`DELETE`／`op.execute` | 會改資料或丟資料的 migration，要寫進 CHANGELOG，也要讓 `upgrade-check` 的 `seed` 寫入相關的資料 |
