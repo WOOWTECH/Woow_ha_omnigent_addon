@@ -15,10 +15,11 @@
 #
 # Sizing target: <400 MB compressed.
 
-# Base image is per-arch and pinned in the CI matrix via --build-arg.
-# The `base/{arch}` naming matches upstream hassio-addons/addon-base packages
-# (e.g. ghcr.io/hassio-addons/base/amd64:20.2.0). The default here is just a
-# fallback for local `docker build` on amd64 — CI always overrides it.
+# The base image per architecture is set in build.yaml (`build_from`). The
+# Supervisor reads it when it builds this add-on from source, and the publish
+# workflow reads it for the published images; both pass it as BUILD_FROM. The
+# default here is only a fallback for a local `docker build` on amd64 and
+# must match build.yaml's amd64 entry.
 ARG BUILD_FROM=ghcr.io/hassio-addons/base/amd64:20.2.0
 # From candidate-image.json: immutable, anonymously pullable, both architectures.
 # Only portable wheel files are copied; no executable from this stage is run.
