@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.26
+
+- Fix: the add-on image could stop building when Alpine published a newer
+  build of a system package that the base image had locked to an exact
+  version. The image now lifts those locks before installing anything, instead
+  of working around one package (musl) at a time. The bundled Omnigent server
+  (0.23.0), its database and your settings do not change, and no migration
+  runs.
+
 ## 0.1.25
 
 **Back up this add-on before updating.** This release runs the Omnigent 0.22
