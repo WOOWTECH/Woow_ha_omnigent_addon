@@ -59,8 +59,8 @@ ENV LANG=C.UTF-8 \
 # they were made (e.g. musl at 1.2.5-r23) as hard constraints in world.
 # Alpine publishes new revisions continuously, so those pins go stale and then
 # EVERY apk operation in the image fails to resolve, including installs
-# unrelated to the pinned package (build-base needs the current musl-dev,
-# openssl-dev the current libcrypto3). Stripping the constraints leaves the
+# unrelated to the pinned package (anything that needs the current musl or
+# libcrypto3). Stripping the constraints leaves the
 # package NAMES, so world still describes what the image actually contains
 # and nothing gets purged.
 RUN sed -i 's/[<>=~].*$//' /etc/apk/world \
@@ -105,21 +105,23 @@ RUN curl -fsSL -o /tmp/bashio.tar.gz \
 # --- omnigent (pinned WOOW MCP wheel) --------------------------------------
 # Keep the existing Alpine dependency assembly, then replace the package with
 # the shared verified wheel. Never reinstall a PyPI omnigent package afterwards.
-# The pypi package pulls a lot of psycopg / grpc / uvicorn wheels — no
-# compilers needed; all published as cp3xx manylinux wheels.
+# No compiler is installed. Every native dependency of omnigent comes as a
+# musllinux wheel (cp3xx or abi3) for both architectures, google-re2 comes from
+# Alpine's py3-re2 (below), and the only sdists pip builds are pure Python
+# (claude-agent-sdk). If a later dependency ships no musl wheel and needs
+# compiling, this step fails on purpose: fail loudly rather than compile slowly
+# under QEMU on aarch64 (pipeline issue release-gating/244). Add a build
+# dependency only together with the reason it is needed.
 # rm -rf ~/.omnigent because `omnigent --version` at build time
 # initialises $HOME/.omnigent/logs as root uid 0, which will collide with
 # the addon's runtime uid mapping. Clean slate on first run.
 # google-re2 is a transitive dep of cel-python (via omnigent) and ships
-# no musllinux wheel. Alpine's py3-re2 (runtime list above) provides it; it has
-# to stay a runtime package, because `apk del .build-deps` would otherwise
-# remove the py3-re2 that re2-dev pulls in, and CEL policies silently drop out
-# of the policy registry (pipeline issue release-gating/242).
+# no musllinux wheel. Alpine's py3-re2 (runtime list above) provides it. If it
+# is missing, CEL policies silently drop out of the policy registry (pipeline
+# issue release-gating/242); `pip3 check` and `import re2, celpy` at the end of
+# the step below fail the build if that happens.
 # Do NOT trail with `|| true` — a silent pip failure is what shipped 0.1.5
 # without the omnigent binary and burnt half an afternoon of debugging.
-# Because py3-re2 satisfies google-re2, pip builds no wheel from source, and
-# the .build-deps below are probably unused. Removing them is
-# release-gating/244, still to be checked on aarch64.
 COPY --from=woow-mcp-wheel /opt/woow-artifact/ /opt/woow-artifact/
 COPY build/mcp_artifact.py /usr/local/lib/omnigent-build/mcp_artifact.py
 COPY build/artifact-pin.json /usr/share/omnigent/artifact-pin.json
@@ -128,11 +130,7 @@ RUN python3 /usr/local/lib/omnigent-build/mcp_artifact.py verify-artifact \
         --source-commit "${OMNIGENT_SOURCE_COMMIT}" \
         --wheel-image "${OMNIGENT_WHEEL_IMAGE}" --artifact /opt/woow-artifact
 
-RUN apk add --no-cache --virtual .build-deps \
-        build-base \
-        abseil-cpp-dev \
-        re2-dev \
- && pip3 install --no-cache-dir "omnigent==${OMNIGENT_VERSION}" \
+RUN pip3 install --no-cache-dir "omnigent==${OMNIGENT_VERSION}" \
  && pip3 install --no-cache-dir --no-deps --no-index --force-reinstall \
         /opt/woow-artifact/omnigent-0.23.0-py3-none-any.whl \
  && python3 /opt/woow-artifact/verify.py runtime \
@@ -141,7 +139,6 @@ RUN apk add --no-cache --virtual .build-deps \
         --receipt /usr/share/omnigent/artifact-pin.json \
  && omnigent --version \
  && which omnigent \
- && apk del .build-deps \
  && pip3 check \
  && python3 -c "import re2, celpy"
 RUN rm -rf /root/.omnigent /data/omnigent-home/.omnigent 2>/dev/null || true
