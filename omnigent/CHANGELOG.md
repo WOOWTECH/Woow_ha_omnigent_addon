@@ -8,6 +8,10 @@
   of working around one package (musl) at a time. The bundled Omnigent server
   (0.23.0), its database and your settings do not change, and no migration
   runs.
+- Fix: the "CEL Expression Policy" built-in policy was missing from the
+  policy list (and adding it through the API was refused), because a library
+  it needs was removed at the end of the image build. It is now kept, and the
+  build checks it is still there.
 
 ## 0.1.25
 

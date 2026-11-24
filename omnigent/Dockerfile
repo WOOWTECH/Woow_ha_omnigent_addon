@@ -77,6 +77,7 @@ RUN sed -i 's/[<>=~].*$//' /etc/apk/world \
         python3 \
         py3-pip \
         py3-psycopg \
+        py3-re2 \
         tzdata
 
 # --- bashio 0.18.1 over the base image's 0.18.0 ---------------------------
@@ -110,8 +111,10 @@ RUN curl -fsSL -o /tmp/bashio.tar.gz \
 # initialises $HOME/.omnigent/logs as root uid 0, which will collide with
 # the addon's runtime uid mapping. Clean slate on first run.
 # google-re2 is a transitive dep of cel-python (via omnigent) and ships
-# no musllinux wheel — it must build from source, which needs g++ + make.
-# We install a throwaway .build-deps group so the runtime image stays lean.
+# no musllinux wheel. Alpine's py3-re2 (runtime list above) provides it; it has
+# to stay a runtime package, because `apk del .build-deps` would otherwise
+# remove the py3-re2 that re2-dev pulls in, and CEL policies silently drop out
+# of the policy registry (pipeline issue release-gating/242).
 # Do NOT trail with `|| true` — a silent pip failure is what shipped 0.1.5
 # without the omnigent binary and burnt half an afternoon of debugging.
 # google-re2 wheel build needs g++ (build-base) + abseil headers. Everything
@@ -131,14 +134,15 @@ RUN apk add --no-cache --virtual .build-deps \
  && pip3 install --no-cache-dir "omnigent==${OMNIGENT_VERSION}" \
  && pip3 install --no-cache-dir --no-deps --no-index --force-reinstall \
         /opt/woow-artifact/omnigent-0.23.0-py3-none-any.whl \
- && pip3 check \
  && python3 /opt/woow-artifact/verify.py runtime \
         --artifact /opt/woow-artifact --source-commit "${OMNIGENT_SOURCE_COMMIT}" \
  && python3 /usr/local/lib/omnigent-build/mcp_artifact.py verify-installed \
         --receipt /usr/share/omnigent/artifact-pin.json \
  && omnigent --version \
  && which omnigent \
- && apk del .build-deps
+ && apk del .build-deps \
+ && pip3 check \
+ && python3 -c "import re2, celpy"
 RUN rm -rf /root/.omnigent /data/omnigent-home/.omnigent 2>/dev/null || true
 
 # --- HA Ingress native base-path support ------------------------------------
