@@ -38,12 +38,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The base image comes from omnigent/build.yaml (build_from), the
+          # same file Supervisor reads when it builds from source.
           - arch: amd64
             platform: linux/amd64
-            base: ghcr.io/hassio-addons/base/amd64:20.2.0
           - arch: aarch64
             platform: linux/arm64
-            base: ghcr.io/hassio-addons/base/aarch64:20.2.0
     env:
       IMAGE: ghcr.io/woowtech/woow-ha-omnigent-${{ matrix.arch }}
       PUBLISH: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
@@ -64,6 +64,9 @@ jobs:
           yq -e ".arch[] | select(. == \"${ARCH}\")" omnigent/config.yaml >/dev/null \
             || { echo "::error::omnigent/config.yaml does not list ${ARCH}"; exit 1; }
           echo "version=$(yq -r '.version' omnigent/config.yaml)" >> "$GITHUB_OUTPUT"
+          base="$(yq -r ".build_from.${ARCH} // \"\"" omnigent/build.yaml)"
+          [ -n "${base}" ] || { echo "::error::omnigent/build.yaml build_from has no base image for ${ARCH}"; exit 1; }
+          echo "base=${base}" >> "$GITHUB_OUTPUT"
 
       - name: Validate the pinned MCP source receipt
         id: source
@@ -111,7 +114,7 @@ jobs:
           load: ${{ env.PUBLISH != 'true' && matrix.arch == 'amd64' }}
           tags: ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
           build-args: |
-            BUILD_FROM=${{ matrix.base }}
+            BUILD_FROM=${{ steps.v.outputs.base }}
             BUILD_ARCH=${{ matrix.arch }}
             OMNIGENT_WHEEL_IMAGE=${{ steps.source.outputs.wheel_image }}
             OMNIGENT_SOURCE_COMMIT=${{ steps.source.outputs.commit }}
