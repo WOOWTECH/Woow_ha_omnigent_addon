@@ -23,8 +23,7 @@
 - **測已發布的版本**：在 add-on 商店加入本 repo 的網址，直接安裝。
 - **測 PR 版本**：PR 的 image 不會推到 GHCR。要把 `omnigent/` 以 local add-on 的方式放進 HAOS 的 `/addons`，讓 Supervisor 自己 build。
   - 只在測試機上的那份做改動：`config.yaml` 拿掉 `image`，Supervisor 才會在本機 build（有 `image` 時會去拉 image）。
-  - amd64：Dockerfile 的 `ARG BUILD_FROM` 預設值就是 CI 用的 amd64 base。新版 Supervisor 沒有 `build.yaml` 時會用這個預設值，不用另外設定。
-  - aarch64：Dockerfile 的預設值是 amd64 的 base，所以要加一個 `build.yaml`，把 `build_from` 設成 CI matrix 裡 aarch64 的 base（見 `publish-omnigent-addon-images.yml`）。`build.yaml` 已被 Supervisor 標為 deprecated，會印 warning，屬正常。
+  - base image 不用另外設定：`omnigent/build.yaml` 的 `build_from` 為每個架構指定 base，Supervisor 從原始碼 build 時會用它，CI 也從同一個檔讀。`build.yaml` 已被 Supervisor 標為 deprecated，會印 warning，屬正常。
 - **要測「從 FROM 升級到 TO」時，FROM 和 TO 都要用 local add-on。** local add-on 的 slug 是 `local_woow-omnigent`，商店版是 `<repo hash>_woow-omnigent`。兩者是不同的 add-on，不共用 `/data`，也不能互相更新。
 - **HA 2026.11 起 add-on 改稱 app。** 官方 SSH add-on 裡，`/addons` 變成 `/local_apps`，`/addon_configs` 變成 `/app_configs`；CLI 是 `ha apps …`（例：`ha apps logs local_woow-omnigent`）。
 - **不開瀏覽器也能全部用 API 做完**（2026-11-08 的做法）：
