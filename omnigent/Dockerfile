@@ -64,8 +64,11 @@ ENV LANG=C.UTF-8 \
 # libcrypto3). Stripping the constraints leaves the
 # package NAMES, so world still describes what the image actually contains
 # and nothing gets purged.
+# musl is upgraded here explicitly: nothing else in the image pulls in the
+# current musl now that no compiler toolchain is installed (release-gating/244),
+# and the base's revision can lag behind security fixes.
 RUN sed -i 's/[<>=~].*$//' /etc/apk/world \
- && apk upgrade --no-cache libssl3 libcrypto3 \
+ && apk upgrade --no-cache libssl3 libcrypto3 musl \
  && apk add --no-cache \
         bash \
         ca-certificates \
