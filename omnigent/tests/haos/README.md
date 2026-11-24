@@ -153,8 +153,14 @@ Actual Supervisor backup/restore checks include:
 - Cleanly power off HAOS, start a new QEMU process with the same disk, require a
   changed kernel boot ID, and recheck data plus the original profile URLs.
 - Restore the baseline backup; require the old image/version, original data,
-  member credentials and the baseline database migration head. The candidate
-  must have moved the head first, so the check tells the two databases apart.
+  member credentials and the baseline database migration head. The running
+  image must be the baseline image, which differs from the candidate image, so
+  the check tells the two versions apart even when the head did not move.
+- Migration head rule: list each version's `versions/*.py` (name, SHA-256) and
+  alembic script heads in the running container. If the candidate has the same
+  files as the baseline, the head must stay at the baseline head. If it adds
+  files (a merge-only revision counts), the head must move to the candidate's
+  single script head. A missing or changed baseline file fails.
 
 Only `haos-acceptance.json` is uploaded. It includes controlled stage outcomes,
 artifact/image/source identities, physical resource counts, Supervisor version,
