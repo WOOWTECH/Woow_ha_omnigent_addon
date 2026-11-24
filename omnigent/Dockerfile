@@ -117,8 +117,9 @@ RUN curl -fsSL -o /tmp/bashio.tar.gz \
 # of the policy registry (pipeline issue release-gating/242).
 # Do NOT trail with `|| true` — a silent pip failure is what shipped 0.1.5
 # without the omnigent binary and burnt half an afternoon of debugging.
-# google-re2 wheel build needs g++ (build-base) + abseil headers. Everything
-# else in omnigent's dep tree ships musllinux wheels.
+# Because py3-re2 satisfies google-re2, pip builds no wheel from source, and
+# the .build-deps below are probably unused. Removing them is
+# release-gating/244, still to be checked on aarch64.
 COPY --from=woow-mcp-wheel /opt/woow-artifact/ /opt/woow-artifact/
 COPY build/mcp_artifact.py /usr/local/lib/omnigent-build/mcp_artifact.py
 COPY build/artifact-pin.json /usr/share/omnigent/artifact-pin.json
